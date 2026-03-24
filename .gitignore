@@ -1,6 +1,32 @@
+# Frontend artifacts
 node_modules
 dist
 .vite
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*,cover
+.hypothesis/
+
+# Database artifacts
+*.db
+*.sqlite3
+
+# Logs and temp files
 *.log
-build_output.txt
-build_output_v2.txt
+build_output*.txt
+verification/

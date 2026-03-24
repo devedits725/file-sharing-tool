@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // optional: proxy /api calls to backend during dev
+      "/rooms": "http://localhost:8000"
     }
   }
 });
