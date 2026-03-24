@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 const API = "";
 
@@ -35,9 +35,9 @@ async function apiCreateRoom(file, onProgress) {
       try {
         const res = xhr.responseText ? JSON.parse(xhr.responseText) : {};
         if (xhr.status === 200) resolve(res);
-        else reject(new Error(res.detail || "Upload failed"));
+        else reject(new Error(res.detail || `Upload failed (Status: ${xhr.status})`));
       } catch (e) {
-        reject(new Error("Failed to parse server response"));
+        reject(new Error(`Failed to parse server response (Status: ${xhr.status})`));
       }
     };
     xhr.onerror = () => reject(new Error("Network error or server unreachable"));
@@ -49,20 +49,20 @@ async function apiGetRoom(code) {
   const res = await fetch(`${API}/rooms/${code.toUpperCase()}`);
   if (res.status === 404) throw new Error("Room not found. Check the code.");
   if (res.status === 410) throw new Error("This room has expired.");
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
     throw new Error(data.detail || "Something went wrong.");
   }
-  return res.json();
+  return data;
 }
 
 async function apiDeleteRoom(code) {
   const res = await fetch(`${API}/rooms/${code.toUpperCase()}`, { method: "DELETE" });
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
     throw new Error(data.detail || "Failed to delete room.");
   }
-  return res.json();
+  return data;
 }
 
 // ───────────────────────────────────────────
@@ -963,7 +963,7 @@ export default function App() {
   // Auto-fill room code from URL ?room=XXXXXX
   const urlRoom = new URLSearchParams(window.location.search).get("room");
 
-  useState(() => {
+  useEffect(() => {
     if (urlRoom && tab !== "receive") setTab("receive");
   }, [urlRoom]);
 
