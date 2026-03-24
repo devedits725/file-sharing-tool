@@ -32,10 +32,15 @@ async function apiCreateRoom(file, onProgress) {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     };
     xhr.onload = () => {
-      if (xhr.status === 200) resolve(JSON.parse(xhr.responseText));
-      else reject(new Error(JSON.parse(xhr.responseText)?.detail || "Upload failed"));
+      try {
+        const res = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+        if (xhr.status === 200) resolve(res);
+        else reject(new Error(res.detail || "Upload failed"));
+      } catch (e) {
+        reject(new Error("Failed to parse server response"));
+      }
     };
-    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.onerror = () => reject(new Error("Network error or server unreachable"));
     xhr.send(form);
   });
 }
@@ -44,13 +49,19 @@ async function apiGetRoom(code) {
   const res = await fetch(`${API}/rooms/${code.toUpperCase()}`);
   if (res.status === 404) throw new Error("Room not found. Check the code.");
   if (res.status === 410) throw new Error("This room has expired.");
-  if (!res.ok) throw new Error("Something went wrong.");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || "Something went wrong.");
+  }
   return res.json();
 }
 
 async function apiDeleteRoom(code) {
   const res = await fetch(`${API}/rooms/${code.toUpperCase()}`, { method: "DELETE" });
-  if (!res.ok) throw new Error("Failed to delete room.");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || "Failed to delete room.");
+  }
   return res.json();
 }
 
@@ -830,8 +841,8 @@ function CreateRoom() {
 // ───────────────────────────────────────────
 // COMPONENT: JoinRoom
 // ───────────────────────────────────────────
-function JoinRoom() {
-  const [code, setCode]       = useState("");
+function JoinRoom({ initialCode = "" }) {
+  const [code, setCode]       = useState(initialCode);
   const [room, setRoom]       = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
@@ -951,6 +962,10 @@ export default function App() {
 
   // Auto-fill room code from URL ?room=XXXXXX
   const urlRoom = new URLSearchParams(window.location.search).get("room");
+
+  useState(() => {
+    if (urlRoom && tab !== "receive") setTab("receive");
+  }, [urlRoom]);
 
   return (
     <>
