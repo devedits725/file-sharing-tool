@@ -35,9 +35,15 @@ async function apiCreateRoom(file, onProgress) {
       try {
         const res = xhr.responseText ? JSON.parse(xhr.responseText) : {};
         if (xhr.status === 200) resolve(res);
-        else reject(new Error(res.detail || `Upload failed (Status: ${xhr.status})`));
+        else {
+          let msg = res.detail || `Upload failed (Status: ${xhr.status})`;
+          if (xhr.status === 404) msg += " - Backend not found. Check your vercel.json or API URL.";
+          reject(new Error(msg));
+        }
       } catch (e) {
-        reject(new Error(`Failed to parse server response (Status: ${xhr.status})`));
+        let msg = `Failed to parse server response (Status: ${xhr.status})`;
+        if (xhr.status === 404) msg += " - Backend not found. Check your vercel.json or API URL.";
+        reject(new Error(msg));
       }
     };
     xhr.onerror = () => reject(new Error("Network error or server unreachable"));
@@ -47,11 +53,16 @@ async function apiCreateRoom(file, onProgress) {
 
 async function apiGetRoom(code) {
   const res = await fetch(`${API}/rooms/${code.toUpperCase()}`);
-  if (res.status === 404) throw new Error("Room not found. Check the code.");
+  if (res.status === 404) {
+    // Distinguish between "Room not found" (API returned 404) and "API not found" (Proxy/Vercel returned 404)
+    const data = await res.json().catch(() => null);
+    if (data && data.detail) throw new Error(data.detail);
+    throw new Error("Room not found (or Backend unreachable). Check the code and your deployment config.");
+  }
   if (res.status === 410) throw new Error("This room has expired.");
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || "Something went wrong.");
+    throw new Error(data.detail || `Something went wrong (Status: ${res.status})`);
   }
   return data;
 }
@@ -60,7 +71,9 @@ async function apiDeleteRoom(code) {
   const res = await fetch(`${API}/rooms/${code.toUpperCase()}`, { method: "DELETE" });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || "Failed to delete room.");
+    let msg = data.detail || `Failed to delete room (Status: ${res.status})`;
+    if (res.status === 404) msg += " - Backend not found.";
+    throw new Error(msg);
   }
   return data;
 }
