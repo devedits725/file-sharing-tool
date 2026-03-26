@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-
-const API = "";
+import { supabase } from "./supabase";
 
 // ───────────────────────────────────────────
 // UTILS
@@ -19,63 +18,112 @@ function timeLeft(expiresAt) {
   return `${h}h ${m}m left`;
 }
 
+function generateRoomCode(length = 6) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
 // ───────────────────────────────────────────
-// API CALLS
+// API CALLS (Supabase)
 // ───────────────────────────────────────────
 async function apiCreateRoom(file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    form.append("file", file);
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API}/rooms/create`);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      try {
-        const res = xhr.responseText ? JSON.parse(xhr.responseText) : {};
-        if (xhr.status === 200) resolve(res);
-        else {
-          let msg = res.detail || `Upload failed (Status: ${xhr.status})`;
-          if (xhr.status === 404) msg += " - Backend not found. Check your vercel.json or API URL.";
-          reject(new Error(msg));
-        }
-      } catch (e) {
-        let msg = `Failed to parse server response (Status: ${xhr.status})`;
-        if (xhr.status === 404) msg += " - Backend not found. Check your vercel.json or API URL.";
-        reject(new Error(msg));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Network error or server unreachable"));
-    xhr.send(form);
-  });
+  // 1. Generate unique room code
+  let roomCode = "";
+  let isUnique = false;
+  while (!isUnique) {
+    roomCode = generateRoomCode();
+    const { data } = await supabase
+      .from("rooms")
+      .select("room_code")
+      .eq("room_code", roomCode)
+      .single();
+    if (!data) isUnique = true;
+  }
+
+  // 2. Upload file to Storage
+  const fileExt = file.name.split(".").pop();
+  const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
+  const filePath = `${roomCode}/${fileName}`;
+
+  // We use XMLHttpRequest for progress tracking because Supabase JS SDK doesn't natively support it easily for uploads in all environments without extra work.
+  // Actually, Supabase Storage upload uses fetch, which doesn't support progress.
+  // To keep it simple and follow instructions "only the data layer changes", I will try to use the SDK but progress might be tricky.
+  // WAIT, the prompt says "Replace all API calls ... with direct Supabase JS SDK calls".
+
+  const { data: uploadData, error: uploadError } = await supabase.storage
+    .from("rooms")
+    .upload(filePath, file);
+
+  if (uploadError) throw uploadError;
+
+  // 3. Insert into Database
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const { data: roomData, error: dbError } = await supabase
+    .from("rooms")
+    .insert([
+      {
+        room_code: roomCode,
+        file_name: file.name,
+        file_path: filePath,
+        file_size: file.size,
+        mime_type: file.type || "application/octet-stream",
+        expires_at: expiresAt,
+      },
+    ])
+    .select()
+    .single();
+
+  if (dbError) throw dbError;
+
+  // Progress is not easily available with supabase-js upload without manual fetch/XHR.
+  // Since I MUST use Supabase JS SDK, I'll set progress to 100 at the end if I can't track it.
+  onProgress(100);
+
+  return roomData;
 }
 
 async function apiGetRoom(code) {
-  const res = await fetch(`${API}/rooms/${code.toUpperCase()}`);
-  if (res.status === 404) {
-    // Distinguish between "Room not found" (API returned 404) and "API not found" (Proxy/Vercel returned 404)
-    const data = await res.json().catch(() => null);
-    if (data && data.detail) throw new Error(data.detail);
-    throw new Error("Room not found (or Backend unreachable). Check the code and your deployment config.");
+  const { data, error } = await supabase
+    .from("rooms")
+    .select("*")
+    .eq("room_code", code.toUpperCase())
+    .single();
+
+  if (error || !data) throw new Error("Room not found");
+
+  // Expiry check
+  if (new Date(data.expires_at) < new Date() || !data.is_active) {
+    throw new Error("This room has expired.");
   }
-  if (res.status === 410) throw new Error("This room has expired.");
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.detail || `Something went wrong (Status: ${res.status})`);
-  }
+
   return data;
 }
 
 async function apiDeleteRoom(code) {
-  const res = await fetch(`${API}/rooms/${code.toUpperCase()}`, { method: "DELETE" });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    let msg = data.detail || `Failed to delete room (Status: ${res.status})`;
-    if (res.status === 404) msg += " - Backend not found.";
-    throw new Error(msg);
+  // Get room info first to get file path
+  const { data: room } = await supabase
+    .from("rooms")
+    .select("file_path")
+    .eq("room_code", code.toUpperCase())
+    .single();
+
+  if (room) {
+    // Delete from storage
+    await supabase.storage.from("rooms").remove([room.file_path]);
   }
-  return data;
+
+  // Delete from DB
+  const { error } = await supabase
+    .from("rooms")
+    .delete()
+    .eq("room_code", code.toUpperCase());
+
+  if (error) throw error;
+  return { message: "Room deleted" };
 }
 
 // ───────────────────────────────────────────
@@ -877,11 +925,33 @@ function JoinRoom({ initialCode = "" }) {
     }
   };
 
-  const handleDownload = () => {
-    window.open(`${API}/rooms/${room.room_code}/download`, "_blank");
-    setDlMsg("Download started!");
-    setRoom((r) => ({ ...r, download_count: r.download_count + 1 }));
-    setTimeout(() => setDlMsg(""), 3000);
+  const handleDownload = async () => {
+    try {
+      const { data, error } = await supabase.storage
+        .from("rooms")
+        .createSignedUrl(room.file_path, 60);
+
+      if (error) throw error;
+
+      window.open(data.signedUrl, "_blank");
+
+      // Update download count
+      const { data: updatedRoom } = await supabase
+        .from("rooms")
+        .update({ download_count: room.download_count + 1 })
+        .eq("id", room.id)
+        .select()
+        .single();
+
+      if (updatedRoom) {
+        setRoom(updatedRoom);
+      }
+
+      setDlMsg("Download started!");
+      setTimeout(() => setDlMsg(""), 3000);
+    } catch (e) {
+      setError("Failed to generate download link: " + e.message);
+    }
   };
 
   const expiryPct = room
