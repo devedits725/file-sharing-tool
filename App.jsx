@@ -31,6 +31,8 @@ function generateRoomCode(length = 6) {
 // API CALLS (Supabase)
 // ───────────────────────────────────────────
 async function apiCreateRoom(file, onProgress) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+
   // 1. Generate unique room code
   let roomCode = "";
   let isUnique = false;
@@ -40,7 +42,7 @@ async function apiCreateRoom(file, onProgress) {
       .from("rooms")
       .select("room_code")
       .eq("room_code", roomCode)
-      .single();
+      .maybeSingle();
     if (!data) isUnique = true;
   }
 
@@ -48,11 +50,6 @@ async function apiCreateRoom(file, onProgress) {
   const fileExt = file.name.split(".").pop();
   const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
   const filePath = `${roomCode}/${fileName}`;
-
-  // We use XMLHttpRequest for progress tracking because Supabase JS SDK doesn't natively support it easily for uploads in all environments without extra work.
-  // Actually, Supabase Storage upload uses fetch, which doesn't support progress.
-  // To keep it simple and follow instructions "only the data layer changes", I will try to use the SDK but progress might be tricky.
-  // WAIT, the prompt says "Replace all API calls ... with direct Supabase JS SDK calls".
 
   const { data: uploadData, error: uploadError } = await supabase.storage
     .from("rooms")
@@ -79,19 +76,19 @@ async function apiCreateRoom(file, onProgress) {
 
   if (dbError) throw dbError;
 
-  // Progress is not easily available with supabase-js upload without manual fetch/XHR.
-  // Since I MUST use Supabase JS SDK, I'll set progress to 100 at the end if I can't track it.
   onProgress(100);
 
   return roomData;
 }
 
 async function apiGetRoom(code) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+
   const { data, error } = await supabase
     .from("rooms")
     .select("*")
     .eq("room_code", code.toUpperCase())
-    .single();
+    .maybeSingle();
 
   if (error || !data) throw new Error("Room not found");
 
@@ -104,12 +101,14 @@ async function apiGetRoom(code) {
 }
 
 async function apiDeleteRoom(code) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+
   // Get room info first to get file path
   const { data: room } = await supabase
     .from("rooms")
     .select("file_path")
     .eq("room_code", code.toUpperCase())
-    .single();
+    .maybeSingle();
 
   if (room) {
     // Delete from storage
@@ -926,6 +925,7 @@ function JoinRoom({ initialCode = "" }) {
   };
 
   const handleDownload = async () => {
+    if (!supabase) return;
     try {
       const { data, error } = await supabase.storage
         .from("rooms")
@@ -1042,6 +1042,8 @@ function JoinRoom({ initialCode = "" }) {
 // ───────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("send");
+  const [supabaseReady, setSupabaseReady] = useState(false);
+  const [isChecking, setIsChecking] = useState(true);
 
   // Auto-fill room code from URL ?room=XXXXXX
   const urlRoom = new URLSearchParams(window.location.search).get("room");
@@ -1049,6 +1051,45 @@ export default function App() {
   useEffect(() => {
     if (urlRoom && tab !== "receive") setTab("receive");
   }, [urlRoom]);
+
+  useEffect(() => {
+    // Check if supabase is initialized
+    if (supabase) {
+      setSupabaseReady(true);
+    }
+    setIsChecking(false);
+  }, []);
+
+  if (isChecking) {
+    return (
+      <>
+        <style>{STYLES}</style>
+        <div className="app">
+          <div className="spinner" style={{ width: "40px", height: "40px", borderWidth: "4px" }} />
+        </div>
+      </>
+    );
+  }
+
+  if (!supabaseReady) {
+    return (
+      <>
+        <style>{STYLES}</style>
+        <div className="app">
+          <div className="card" style={{ maxWidth: "520px", padding: "24px" }}>
+            <div className="card-title">Configuration Required</div>
+            <div className="alert alert-error" style={{ display: "block", wordBreak: "break-word" }}>
+              ⚠️ <strong>Supabase is not configured.</strong>
+              <br /><br />
+              Please set <strong>VITE_SUPABASE_URL</strong> and <strong>VITE_SUPABASE_ANON_KEY</strong> environment variables.
+              <br /><br />
+              If you are seeing this on Vercel, make sure you have added them in the Project Settings.
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
