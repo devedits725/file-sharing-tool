@@ -39,25 +39,27 @@ function getFileIcon(mime = "") {
 // ───────────────────────────────────────────
 // API CALLS (Supabase)
 // ───────────────────────────────────────────
-async function apiCreateRoom(file, onProgress) {
+async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  onProgress(5); // Start the progress feel
-  let roomCode = "";
-  let isUnique = false;
-  while (!isUnique) {
-    roomCode = generateRoomCode();
-    const { data } = await supabase
-      .from("rooms")
-      .select("room_code")
-      .eq("room_code", roomCode)
-      .maybeSingle();
-    if (!data) isUnique = true;
+  onProgress(5);
+  let roomCode = existingCode;
+
+  if (!roomCode) {
+    let isUnique = false;
+    while (!isUnique) {
+      roomCode = generateRoomCode();
+      const { data } = await supabase
+        .from("rooms")
+        .select("room_code")
+        .eq("room_code", roomCode)
+        .maybeSingle();
+      if (!data) isUnique = true;
+    }
   }
 
-  const fileExt = file.name.split(".").pop();
-  const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
-  const filePath = `${roomCode}/${fileName}`;
+  // Preservation of original filename within roomCode/ prefix
+  const filePath = `${roomCode}/${file.name}`;
 
   // REAL-TIME UPLOAD PROGRESS
   console.log("Starting upload for:", filePath);
@@ -66,16 +68,15 @@ async function apiCreateRoom(file, onProgress) {
     .upload(filePath, file, {
       onUploadProgress: (progress) => {
         if (!progress.total) return;
-        // Map 0-100 to 5-95 to leave room for the initial 5 and final DB step
         const percent = 5 + Math.round((progress.loaded / progress.total) * 90);
-        console.log(`Upload progress: ${percent}%`);
         onProgress(percent);
-      }
+      },
+      upsert: true // Allow multi-part uploads or re-uploads
     });
 
   if (uploadError) throw uploadError;
 
-  onProgress(98); // Start DB insertion phase
+  onProgress(98);
 
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const { data: roomData, error: dbError } = await supabase
@@ -105,29 +106,29 @@ async function apiGetRoom(code) {
   const { data, error } = await supabase
     .from("rooms")
     .select("*")
-    .eq("room_code", code.toUpperCase())
-    .maybeSingle();
+    .eq("room_code", code.toUpperCase());
 
-  if (error || !data) throw new Error("Room not found");
+  if (error || !data || data.length === 0) throw new Error("Room not found");
 
-  if (new Date(data.expires_at) < new Date() || !data.is_active) {
+  const latestFile = data[0];
+  if (new Date(latestFile.expires_at) < new Date() || !latestFile.is_active) {
     throw new Error("This room has expired.");
   }
 
-  return data;
+  return data; // Return all files
 }
 
 async function apiDeleteRoom(code) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const { data: room } = await supabase
+  const { data: rooms } = await supabase
     .from("rooms")
     .select("file_path")
-    .eq("room_code", code.toUpperCase())
-    .maybeSingle();
+    .eq("room_code", code.toUpperCase());
 
-  if (room) {
-    await supabase.storage.from("rooms").remove([room.file_path]);
+  if (rooms && rooms.length > 0) {
+    const paths = rooms.map(r => r.file_path);
+    await supabase.storage.from("rooms").remove(paths);
   }
 
   const { error } = await supabase
@@ -198,55 +199,24 @@ function RoomCodeDisplay({ code }) {
 }
 
 // ───────────────────────────────────────────
-// COMPONENT: CreateRoom
+// COMPONENT: FileLoopDashboard
 // ───────────────────────────────────────────
-function CreateRoom({ initialCode }) {
-  const [file, setFile]         = useState(null);
-  const [progress, setProgress] = useState(0);
+function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
   const [uploading, setUploading] = useState(false);
-  const [result, setResult]     = useState(null);
-  const [error, setError]       = useState("");
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef();
 
-  useEffect(() => {
-    if (initialCode) {
-      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
-      if (managed[initialCode]) {
-        setResult(managed[initialCode]);
-      }
-    }
-  }, [initialCode]);
-
-  const handleFile = (f) => {
-    if (!f) return;
-    setFile(f);
-    setResult(null);
-    setError("");
-  };
-
-  const handleDrop = useCallback((e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer.files[0];
-    if (f) handleFile(f);
-  }, []);
-
-  const handleUpload = async () => {
+  const handleFileUpload = async (file) => {
     if (!file) return;
     setUploading(true);
     setError("");
     setProgress(0);
     try {
-      const data = await apiCreateRoom(file, setProgress);
-      // Let 100% progress and "Finalizing" be seen for a moment
+      await apiUploadToFileLoop(file, setProgress, roomCode);
       await new Promise(res => setTimeout(res, 800));
-      setResult(data);
-      // PERSIST HOST STATE
-      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
-      managed[data.room_code] = data;
-      localStorage.setItem("filoop_managed", JSON.stringify(managed));
-      window.history.pushState({}, "", `/${data.room_code}`);
+      onRefresh();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -254,142 +224,255 @@ function CreateRoom({ initialCode }) {
     }
   };
 
-  const handleDelete = async () => {
-    if (!result) return;
-    const codeToDelete = result.room_code;
+  const handleDownload = async (file) => {
+    if (!supabase) return;
     try {
-      await apiDeleteRoom(codeToDelete);
+      const { data, error } = await supabase.storage
+        .from("rooms")
+        .createSignedUrl(file.file_path, 60);
+
+      if (error) throw error;
+      window.location.href = data.signedUrl;
+
+      await supabase
+        .from("rooms")
+        .update({ download_count: file.download_count + 1 })
+        .eq("id", file.id);
+
+      onRefresh();
+    } catch (e) {
+      setError("Download failed: " + e.message);
+    }
+  };
+
+  const handleDeleteLoop = async () => {
+    try {
+      await apiDeleteRoom(roomCode);
       const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
-      delete managed[codeToDelete];
+      delete managed[roomCode];
       localStorage.setItem("filoop_managed", JSON.stringify(managed));
-      setResult(null);
-      setFile(null);
-      setProgress(0);
-      window.history.pushState({}, "", "/");
+      onReset();
     } catch (e) {
       setError(e.message);
     }
   };
 
   return (
-    <div className="w-full flex flex-col items-center space-y-12 relative z-10">
-      {!result ? (
-        <>
-          <div className="text-center space-y-4">
-            <h1 className="text-5xl md:text-7xl font-headline font-bold tracking-tighter text-on-surface">
-              Drop it. Loop it. <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Done.</span>
-            </h1>
-            <p className="text-on-surface-variant font-body text-lg max-w-lg mx-auto">
-              Ultra-fast, ephemeral file sharing. No accounts. No logs. Just flow.
-            </p>
-          </div>
+    <div className="w-full flex flex-col items-center space-y-12 relative z-10 animate-in fade-in duration-700">
+      <div className="text-center space-y-4">
+        <h1 className="text-4xl md:text-5xl font-headline font-bold tracking-tighter text-on-surface">
+          Loop <span className="text-primary">Active</span>
+        </h1>
+        <p className="text-on-surface-variant font-body text-lg">
+          Anyone with this code can see and add files to the loop.
+        </p>
+      </div>
 
-          <div
-            className={`w-full aspect-[16/9] md:aspect-[21/9] flex items-center justify-center p-1 rounded-xl group cursor-pointer transition-all duration-500 ${dragOver ? 'scale-[1.02]' : ''}`}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={handleDrop}
-            onClick={() => inputRef.current?.click()}
-          >
-            <div className="w-full h-full dashed-portal rounded-xl flex flex-col items-center justify-center gap-4 bg-surface-container-low/40 backdrop-blur-md hover:bg-surface-container-high/60 transition-all duration-500 relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
-              <div className="flex flex-col items-center gap-4 relative z-10">
-                <div className="w-16 h-16 rounded-full bg-surface-container-highest flex items-center justify-center text-primary shadow-[0_0_20px_rgba(0,245,196,0.2)]">
-                  <span className="material-symbols-outlined text-4xl">cloud_upload</span>
-                </div>
-                <p className="text-xl font-headline font-medium text-on-surface group-hover:text-primary transition-colors">
-                  {file ? file.name : "Drag and drop your files here"}
-                </p>
-                <p className="text-sm font-mono text-on-surface-variant uppercase tracking-widest">
-                  {file ? formatBytes(file.size) : "Max 2GB per loop"}
-                </p>
-              </div>
-            </div>
-            <input
-              ref={inputRef}
-              type="file"
-              className="hidden"
-              onChange={(e) => handleFile(e.target.files[0])}
-            />
-          </div>
+      <RoomCodeDisplay code={roomCode} />
 
-          {uploading && (
-            <div className="w-full max-w-md space-y-2 animate-in fade-in duration-300">
-              <div className="flex justify-between text-xs font-mono text-on-surface-variant uppercase tracking-widest">
-                <span>{progress >= 99 ? "Finalizing Loop..." : "Syncing to Cloud..."}</span>
-                <span>{progress}%</span>
-              </div>
-              <div className="h-2 w-full bg-surface-container rounded-full overflow-hidden shadow-inner">
-                <div
-                  className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 ease-out"
-                  style={{ width: `${progress}%` }}
-                ></div>
-              </div>
-            </div>
-          )}
-
-          {error && (
-            <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
-              <span className="material-symbols-outlined">error</span>
-              {error}
-            </div>
-          )}
-
-          <button
-            className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={!file || uploading}
-            onClick={handleUpload}
-          >
-            {uploading ? "Creating Loop..." : "Create Loop"}
-          </button>
-        </>
-      ) : (
-        <>
-          <div className="text-center space-y-4">
-            <h1 className="text-4xl md:text-5xl font-headline font-bold tracking-tighter text-on-surface">
-              Loop <span className="text-primary">Ready</span>
-            </h1>
-            <p className="text-on-surface-variant font-body text-lg">
-              Anyone with this code can download your file.
-            </p>
-          </div>
-
-          <RoomCodeDisplay code={result.room_code} />
-
-          <div className="w-full max-w-xl bg-surface-container/40 backdrop-blur-sm p-6 rounded-lg border border-outline-variant/10 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-lg bg-primary-container/10 flex items-center justify-center text-primary">
-              <span className="material-symbols-outlined">{getFileIcon(result.mime_type)}</span>
+      <div className="w-full max-w-2xl space-y-4">
+        {files.map((file, i) => (
+          <div key={file.id} className="w-full bg-surface-container/40 backdrop-blur-sm p-5 rounded-xl border border-outline-variant/10 flex items-center gap-4 group hover:bg-surface-container-high/60 transition-all duration-300">
+            <div className="w-12 h-12 rounded-lg bg-primary-container/10 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
+              <span className="material-symbols-outlined">{getFileIcon(file.mime_type)}</span>
             </div>
             <div className="flex-grow min-w-0">
-              <p className="text-on-surface font-medium truncate">{result.file_name}</p>
-              <p className="text-on-surface-variant text-xs font-mono">{formatBytes(result.file_size)} • {timeLeft(result.expires_at)}</p>
+              <p className="text-on-surface font-medium truncate">{file.file_name}</p>
+              <p className="text-on-surface-variant text-xs font-mono">{formatBytes(file.file_size)} • {timeLeft(file.expires_at)}</p>
             </div>
-            <div className="flex items-center gap-2 text-on-surface-variant text-xs font-mono">
-              <span className="material-symbols-outlined text-sm">download</span>
-              {result.download_count}
+            <div className="flex items-center gap-4">
+              <div className="hidden md:flex flex-col items-end text-[10px] font-mono text-on-surface-variant uppercase tracking-tighter">
+                <span>{file.download_count} pulls</span>
+              </div>
+              <button
+                onClick={() => handleDownload(file)}
+                className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center hover:bg-primary hover:text-[#004535] transition-all"
+              >
+                <span className="material-symbols-outlined text-xl">download</span>
+              </button>
             </div>
           </div>
+        ))}
 
-          <div className="flex flex-col md:flex-row gap-4 w-full justify-center">
-            <button
-              className="bg-surface-container text-on-surface px-8 py-4 rounded-full font-headline font-bold hover:bg-surface-container-high transition-all active:scale-95"
-              onClick={() => {
-                setFile(null);
-                setResult(null);
-                window.history.pushState({}, "", "/");
-              }}
-            >
-              New Loop
-            </button>
-            <button
-              className="bg-error-container/20 text-error px-8 py-4 rounded-full font-headline font-bold hover:bg-error-container/30 transition-all active:scale-95"
-              onClick={handleDelete}
-            >
-              Destroy Loop
-            </button>
+        {/* IN-DASHBOARD UPLOAD ZONE */}
+        <div
+          className={`w-full py-8 dashed-portal rounded-xl flex flex-col items-center justify-center gap-3 bg-surface-container-low/20 backdrop-blur-md hover:bg-surface-container-high/40 transition-all cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFileUpload(e.dataTransfer.files[0]); }}
+          onClick={() => inputRef.current?.click()}
+        >
+          <span className="material-symbols-outlined text-primary text-3xl">add_circle</span>
+          <p className="text-sm font-headline font-medium text-on-surface-variant">Add another file to this loop</p>
+          <input ref={inputRef} type="file" className="hidden" onChange={(e) => handleFileUpload(e.target.files[0])} />
+        </div>
+      </div>
+
+      {uploading && (
+        <div className="w-full max-w-md space-y-2">
+          <div className="flex justify-between text-xs font-mono text-on-surface-variant uppercase tracking-widest">
+            <span>{progress >= 99 ? "Finalizing..." : "Adding to Loop..."}</span>
+            <span>{progress}%</span>
           </div>
-        </>
+          <div className="h-2 w-full bg-surface-container rounded-full overflow-hidden shadow-inner">
+            <div className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300" style={{ width: `${progress}%` }}></div>
+          </div>
+        </div>
       )}
+
+      {error && (
+        <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
+          <span className="material-symbols-outlined">error</span>
+          {error}
+        </div>
+      )}
+
+      <div className="flex flex-col md:flex-row gap-4 w-full justify-center">
+        <button
+          className="bg-surface-container text-on-surface px-8 py-4 rounded-full font-headline font-bold hover:bg-surface-container-high transition-all active:scale-95"
+          onClick={() => { window.history.pushState({}, "", "/"); onReset(); }}
+        >
+          New Loop
+        </button>
+        <button
+          className="bg-error-container/20 text-error px-8 py-4 rounded-full font-headline font-bold hover:bg-error-container/30 transition-all active:scale-95"
+          onClick={handleDeleteLoop}
+        >
+          Destroy Loop
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────
+// COMPONENT: CreateRoom
+// ───────────────────────────────────────────
+function CreateRoom({ initialCode }) {
+  const [file, setFile]         = useState(null);
+  const [progress, setProgress] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [files, setFiles]       = useState([]);
+  const [error, setError]       = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef();
+
+  const refreshRoom = async (code) => {
+    try {
+      const data = await apiGetRoom(code);
+      setFiles(data);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  useEffect(() => {
+    if (initialCode) {
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      if (managed[initialCode]) {
+        refreshRoom(initialCode);
+      }
+    }
+  }, [initialCode]);
+
+  const handleFile = (f) => {
+    if (!f) return;
+    setFile(f);
+    setFiles([]);
+    setError("");
+  };
+
+  const handleUpload = async () => {
+    if (!file) return;
+    setUploading(true);
+    setError("");
+    setProgress(0);
+    try {
+      const data = await apiUploadToFileLoop(file, setProgress);
+      await new Promise(res => setTimeout(res, 800));
+      // PERSIST HOST STATE
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      managed[data.room_code] = data;
+      localStorage.setItem("filoop_managed", JSON.stringify(managed));
+      window.history.pushState({}, "", `/${data.room_code}`);
+      refreshRoom(data.room_code);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  if (files.length > 0) {
+    return <FileLoopDashboard
+      roomCode={files[0].room_code}
+      files={files}
+      onRefresh={() => refreshRoom(files[0].room_code)}
+      onReset={() => { setFiles([]); setFile(null); }}
+    />;
+  }
+
+  return (
+    <div className="w-full flex flex-col items-center space-y-12 relative z-10">
+      <div className="text-center space-y-4">
+        <h1 className="text-5xl md:text-7xl font-headline font-bold tracking-tighter text-on-surface">
+          Drop it. Loop it. <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Done.</span>
+        </h1>
+        <p className="text-on-surface-variant font-body text-lg max-w-lg mx-auto">
+          Ultra-fast, ephemeral file sharing. No accounts. No logs. Just flow.
+        </p>
+      </div>
+
+      <div
+        className={`w-full aspect-[16/9] md:aspect-[21/9] flex items-center justify-center p-1 rounded-xl group cursor-pointer transition-all duration-500 ${dragOver ? 'scale-[1.02]' : ''}`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); }}
+        onClick={() => inputRef.current?.click()}
+      >
+        <div className="w-full h-full dashed-portal rounded-xl flex flex-col items-center justify-center gap-4 bg-surface-container-low/40 backdrop-blur-md hover:bg-surface-container-high/60 transition-all duration-500 relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+          <div className="flex flex-col items-center gap-4 relative z-10">
+            <div className="w-16 h-16 rounded-full bg-surface-container-highest flex items-center justify-center text-primary shadow-[0_0_20px_rgba(0,245,196,0.2)]">
+              <span className="material-symbols-outlined text-4xl">cloud_upload</span>
+            </div>
+            <p className="text-xl font-headline font-medium text-on-surface group-hover:text-primary transition-colors">
+              {file ? file.name : "Drag and drop your files here"}
+            </p>
+            <p className="text-sm font-mono text-on-surface-variant uppercase tracking-widest">
+              {file ? formatBytes(file.size) : "Max 2GB per loop"}
+            </p>
+          </div>
+        </div>
+        <input ref={inputRef} type="file" className="hidden" onChange={(e) => handleFile(e.target.files[0])} />
+      </div>
+
+      {uploading && (
+        <div className="w-full max-w-md space-y-2 animate-in fade-in duration-300">
+          <div className="flex justify-between text-xs font-mono text-on-surface-variant uppercase tracking-widest">
+            <span>{progress >= 99 ? "Finalizing Loop..." : "Syncing to Cloud..."}</span>
+            <span>{progress}%</span>
+          </div>
+          <div className="h-2 w-full bg-surface-container rounded-full overflow-hidden shadow-inner">
+            <div className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 ease-out" style={{ width: `${progress}%` }}></div>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
+          <span className="material-symbols-outlined">error</span>
+          {error}
+        </div>
+      )}
+
+      <button
+        className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+        disabled={!file || uploading}
+        onClick={handleUpload}
+      >
+        {uploading ? "Creating Loop..." : "Create Loop"}
+      </button>
     </div>
   );
 }
@@ -399,7 +482,7 @@ function CreateRoom({ initialCode }) {
 // ───────────────────────────────────────────
 function JoinRoom({ initialCode = "" }) {
   const [code, setCode]       = useState(initialCode);
-  const [room, setRoom]       = useState(null);
+  const [files, setFiles]     = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
 
@@ -408,10 +491,10 @@ function JoinRoom({ initialCode = "" }) {
     if (cleanCode.length < 6) return;
     setLoading(true);
     setError("");
-    setRoom(null);
+    setFiles([]);
     try {
       const data = await apiGetRoom(cleanCode);
-      setRoom(data);
+      setFiles(data);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -425,118 +508,53 @@ function JoinRoom({ initialCode = "" }) {
     }
   }, [initialCode, handleJoin]);
 
-  const handleDownload = async () => {
-    if (!supabase) return;
-    try {
-      const { data, error } = await supabase.storage
-        .from("rooms")
-        .createSignedUrl(room.file_path, 60);
-
-      if (error) throw error;
-
-      // IOS COMPATIBLE DOWNLOAD
-      window.location.href = data.signedUrl;
-
-      const { data: updatedRoom } = await supabase
-        .from("rooms")
-        .update({ download_count: room.download_count + 1 })
-        .eq("id", room.id)
-        .select()
-        .single();
-
-      if (updatedRoom) setRoom(updatedRoom);
-    } catch (e) {
-      setError("Download failed: " + e.message);
-    }
-  };
+  if (files.length > 0) {
+    return <FileLoopDashboard
+      roomCode={files[0].room_code}
+      files={files}
+      onRefresh={() => handleJoin(files[0].room_code)}
+      onReset={() => { setFiles([]); setCode(""); }}
+    />;
+  }
 
   return (
     <div className="w-full flex flex-col items-center space-y-12 relative z-10">
-      {!room ? (
-        <>
-          <div className="text-center space-y-4">
-            <h1 className="text-5xl md:text-7xl font-headline font-bold tracking-tighter text-on-surface">
-              Enter the <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Loop.</span>
-            </h1>
-            <p className="text-on-surface-variant font-body text-lg max-w-lg mx-auto">
-              Ready to receive? Input the 6-character code below.
-            </p>
-          </div>
+      <div className="text-center space-y-4">
+        <h1 className="text-5xl md:text-7xl font-headline font-bold tracking-tighter text-on-surface">
+          Enter the <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Loop.</span>
+        </h1>
+        <p className="text-on-surface-variant font-body text-lg max-w-lg mx-auto">
+          Ready to receive? Input the 6-character code below.
+        </p>
+      </div>
 
-          <div className="w-full max-w-md">
-            <input
-              type="text"
-              maxLength={6}
-              placeholder="E.G. XK92PL"
-              value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
-              onKeyDown={(e) => e.key === "Enter" && handleJoin()}
-              className="w-full bg-surface-container border border-outline-variant/20 rounded-2xl p-8 text-center text-4xl md:text-5xl font-mono font-bold text-primary tracking-[0.5em] focus:border-primary/40 focus:ring-1 focus:ring-primary/40 outline-none transition-all placeholder:text-on-surface-variant/20 placeholder:tracking-normal"
-              autoFocus
-            />
-          </div>
+      <div className="w-full max-w-md">
+        <input
+          type="text"
+          maxLength={6}
+          placeholder="E.G. XK92PL"
+          value={code}
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+          onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+          className="w-full bg-surface-container border border-outline-variant/20 rounded-2xl p-8 text-center text-4xl md:text-5xl font-mono font-bold text-primary tracking-[0.5em] focus:border-primary/40 focus:ring-1 focus:ring-primary/40 outline-none transition-all placeholder:text-on-surface-variant/20 placeholder:tracking-normal"
+          autoFocus
+        />
+      </div>
 
-          {error && (
-            <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
-              <span className="material-symbols-outlined">error</span>
-              {error}
-            </div>
-          )}
-
-          <button
-            className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50"
-            disabled={code.length < 6 || loading}
-            onClick={() => handleJoin()}
-          >
-            {loading ? "Joining Loop..." : "Join Loop"}
-          </button>
-        </>
-      ) : (
-        <>
-          <div className="text-center space-y-4">
-            <h1 className="text-4xl md:text-5xl font-headline font-bold tracking-tighter text-on-surface">
-              File <span className="text-primary">Located</span>
-            </h1>
-            <p className="text-on-surface-variant font-body text-lg">
-              This loop will vanish in {timeLeft(room.expires_at)}.
-            </p>
-          </div>
-
-          <div className="w-full max-w-xl bg-surface-container-high p-8 rounded-2xl border border-primary/20 shadow-[0_20px_40px_rgba(0,245,196,0.1)] flex flex-col items-center gap-6">
-            <div className="w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
-              <span className="material-symbols-outlined text-5xl">{getFileIcon(room.mime_type)}</span>
-            </div>
-            <div className="text-center space-y-1">
-              <h2 className="text-2xl font-headline font-bold text-on-surface">{room.file_name}</h2>
-              <p className="text-on-surface-variant font-mono text-sm uppercase tracking-widest">{formatBytes(room.file_size)} • {room.mime_type.split('/')[1] || 'FILE'}</p>
-            </div>
-            <button
-              className="w-full bg-primary text-[#004535] py-5 rounded-xl text-xl font-headline font-bold shadow-[0_10px_30px_rgba(0,245,196,0.2)] hover:shadow-[0_15px_40px_rgba(0,245,196,0.4)] transition-all active:scale-[0.98]"
-              onClick={handleDownload}
-            >
-              DOWNLOAD
-            </button>
-            <div className="flex items-center gap-4 text-on-surface-variant text-xs font-mono uppercase tracking-tighter">
-              <span className="flex items-center gap-1">
-                <span className="material-symbols-outlined text-sm">download</span>
-                {room.download_count} Downloads
-              </span>
-              <span className="w-1 h-1 bg-outline-variant rounded-full"></span>
-              <span className="flex items-center gap-1">
-                <span className="material-symbols-outlined text-sm">schedule</span>
-                Expires in {timeLeft(room.expires_at)}
-              </span>
-            </div>
-          </div>
-
-          <button
-            className="text-on-surface-variant hover:text-primary transition-colors font-headline font-bold"
-            onClick={() => { setRoom(null); setCode(""); }}
-          >
-            ← Back to Join
-          </button>
-        </>
+      {error && (
+        <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
+          <span className="material-symbols-outlined">error</span>
+          {error}
+        </div>
       )}
+
+      <button
+        className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50"
+        disabled={code.length < 6 || loading}
+        onClick={() => handleJoin()}
+      >
+        {loading ? "Joining Loop..." : "Join Loop"}
+      </button>
     </div>
   );
 }
@@ -620,7 +638,7 @@ export default function App() {
       </main>
 
       <footer className="w-full flex flex-col items-center gap-4 px-6 py-8 bg-[#060e1b] border-t border-[#404857]/10 z-10">
-        <p className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd]">Files loop for 24 hours then vanish · No account needed</p>
+        <p className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd]">made with ❤️ by Dev Raheja</p>
         <div className="flex gap-6">
           <a className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Privacy</a>
           <a className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Terms</a>
