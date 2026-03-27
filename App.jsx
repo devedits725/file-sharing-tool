@@ -58,9 +58,15 @@ async function apiCreateRoom(file, onProgress) {
   const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
   const filePath = `${roomCode}/${fileName}`;
 
+  // REAL-TIME UPLOAD PROGRESS
   const { data: uploadData, error: uploadError } = await supabase.storage
     .from("rooms")
-    .upload(filePath, file);
+    .upload(filePath, file, {
+      onUploadProgress: (progress) => {
+        const percent = Math.round((progress.loaded / progress.total) * 100);
+        onProgress(percent);
+      }
+    });
 
   if (uploadError) throw uploadError;
 
@@ -138,6 +144,12 @@ function RoomCodeDisplay({ code }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const copyLink = () => {
+    navigator.clipboard.writeText(`${window.location.origin}/${code}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
     <div className="flex flex-col items-center gap-8 w-full animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="flex items-center gap-2 md:gap-3">
@@ -155,15 +167,24 @@ function RoomCodeDisplay({ code }) {
       <div className="flex flex-col items-center gap-4">
         <p className="text-on-surface-variant text-sm font-label flex items-center gap-2">
           <span className="material-symbols-outlined text-sm">info</span>
-          Share this code to allow someone to pull your loop.
+          Share this code or link to allow someone to pull your loop.
         </p>
-        <button
-          onClick={copyCode}
-          className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
-        >
-          <span className="material-symbols-outlined text-sm">{copied ? "check" : "content_copy"}</span>
-          {copied ? "Copied!" : "Copy Code"}
-        </button>
+        <div className="flex gap-4">
+          <button
+            onClick={copyCode}
+            className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-sm">{copied ? "check" : "content_copy"}</span>
+            {copied ? "Copied!" : "Copy Code"}
+          </button>
+          <button
+            onClick={copyLink}
+            className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-sm">link</span>
+            Copy Link
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -347,8 +368,8 @@ function JoinRoom({ initialCode = "" }) {
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
 
-  const handleJoin = async () => {
-    const cleanCode = code.trim().toUpperCase();
+  const handleJoin = useCallback(async (joinCode) => {
+    const cleanCode = (joinCode || code).trim().toUpperCase();
     if (cleanCode.length < 6) return;
     setLoading(true);
     setError("");
@@ -361,7 +382,13 @@ function JoinRoom({ initialCode = "" }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [code]);
+
+  useEffect(() => {
+    if (initialCode && initialCode.length === 6) {
+      handleJoin(initialCode);
+    }
+  }, [initialCode, handleJoin]);
 
   const handleDownload = async () => {
     if (!supabase) return;
@@ -371,7 +398,9 @@ function JoinRoom({ initialCode = "" }) {
         .createSignedUrl(room.file_path, 60);
 
       if (error) throw error;
-      window.open(data.signedUrl, "_blank");
+
+      // IOS COMPATIBLE DOWNLOAD
+      window.location.href = data.signedUrl;
 
       const { data: updatedRoom } = await supabase
         .from("rooms")
@@ -406,6 +435,7 @@ function JoinRoom({ initialCode = "" }) {
               placeholder="E.G. XK92PL"
               value={code}
               onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+              onKeyDown={(e) => e.key === "Enter" && handleJoin()}
               className="w-full bg-surface-container border border-outline-variant/20 rounded-2xl p-8 text-center text-4xl md:text-5xl font-mono font-bold text-primary tracking-[0.5em] focus:border-primary/40 focus:ring-1 focus:ring-primary/40 outline-none transition-all placeholder:text-on-surface-variant/20 placeholder:tracking-normal"
               autoFocus
             />
@@ -421,7 +451,7 @@ function JoinRoom({ initialCode = "" }) {
           <button
             className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50"
             disabled={code.length < 6 || loading}
-            onClick={handleJoin}
+            onClick={() => handleJoin()}
           >
             {loading ? "Joining Loop..." : "Join Loop"}
           </button>
@@ -484,11 +514,18 @@ export default function App() {
   const [supabaseReady, setSupabaseReady] = useState(false);
   const [isChecking, setIsChecking] = useState(true);
 
-  const urlRoom = new URLSearchParams(window.location.search).get("room");
+  // AUTO-PARSE ROOM FROM PATH OR SEARCH
+  const urlParams = new URLSearchParams(window.location.search);
+  const searchRoom = urlParams.get("room");
+  const pathParts = window.location.pathname.split("/").filter(Boolean);
+  const pathRoom = pathParts.length === 1 && pathParts[0].length === 6 ? pathParts[0] : null;
+  const initialRoomCode = pathRoom || searchRoom || "";
 
   useEffect(() => {
-    if (urlRoom && tab !== "receive") setTab("receive");
-  }, [urlRoom]);
+    if (initialRoomCode && tab !== "receive") {
+      setTab("receive");
+    }
+  }, [initialRoomCode]);
 
   useEffect(() => {
     if (supabase) setSupabaseReady(true);
@@ -517,8 +554,8 @@ export default function App() {
     <div className="bg-surface-dim text-on-surface font-body selection:bg-primary-container selection:text-on-primary-container min-h-screen flex flex-col overflow-x-hidden">
       <header className="fixed top-0 w-full flex justify-between items-center px-6 py-4 bg-[#060e1b]/80 backdrop-blur-xl z-50 border-b border-[#404857]/10 shadow-[0_20px_40px_rgba(0,245,196,0.08)]">
         <div className="flex items-center gap-8">
-          <span className="text-2xl font-bold bg-gradient-to-r from-[#00f5c4] to-[#a3ff47] bg-clip-text text-transparent font-headline tracking-tight">Filoop</span>
-          <nav className="hidden md:flex gap-6 items-center">
+          <button onClick={() => setTab('send')} className="text-2xl font-bold bg-gradient-to-r from-[#00f5c4] to-[#a3ff47] bg-clip-text text-transparent font-headline tracking-tight">Filoop</button>
+          <nav className="flex gap-6 items-center">
             <button
               className={`font-headline tracking-tight transition-all duration-300 pb-1 ${tab === 'send' ? 'text-primary border-b-2 border-primary' : 'text-[#a3abbd] hover:text-[#e0e8fc]'}`}
               onClick={() => setTab('send')}
@@ -544,7 +581,7 @@ export default function App() {
         <div className="absolute inset-0 kinetic-grid pointer-events-none"></div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[800px] aspect-square radial-glow pointer-events-none"></div>
 
-        {tab === "send" ? <CreateRoom /> : <JoinRoom initialCode={urlRoom || ""} />}
+        {tab === "send" ? <CreateRoom /> : <JoinRoom initialCode={initialRoomCode} />}
       </main>
 
       <footer className="w-full flex flex-col items-center gap-4 px-6 py-8 bg-[#060e1b] border-t border-[#404857]/10 z-10">
