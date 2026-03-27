@@ -59,16 +59,21 @@ async function apiCreateRoom(file, onProgress) {
   const filePath = `${roomCode}/${fileName}`;
 
   // REAL-TIME UPLOAD PROGRESS
+  console.log("Starting upload for:", filePath);
   const { data: uploadData, error: uploadError } = await supabase.storage
     .from("rooms")
     .upload(filePath, file, {
       onUploadProgress: (progress) => {
+        if (!progress.total) return;
         const percent = Math.round((progress.loaded / progress.total) * 100);
+        console.log(`Upload progress: ${percent}%`);
         onProgress(percent);
       }
     });
 
   if (uploadError) throw uploadError;
+
+  onProgress(99); // Start DB insertion phase
 
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const { data: roomData, error: dbError } = await supabase
@@ -193,7 +198,7 @@ function RoomCodeDisplay({ code }) {
 // ───────────────────────────────────────────
 // COMPONENT: CreateRoom
 // ───────────────────────────────────────────
-function CreateRoom() {
+function CreateRoom({ initialCode }) {
   const [file, setFile]         = useState(null);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -201,6 +206,15 @@ function CreateRoom() {
   const [error, setError]       = useState("");
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef();
+
+  useEffect(() => {
+    if (initialCode) {
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      if (managed[initialCode]) {
+        setResult(managed[initialCode]);
+      }
+    }
+  }, [initialCode]);
 
   const handleFile = (f) => {
     if (!f) return;
@@ -224,6 +238,11 @@ function CreateRoom() {
     try {
       const data = await apiCreateRoom(file, setProgress);
       setResult(data);
+      // PERSIST HOST STATE
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      managed[data.room_code] = data;
+      localStorage.setItem("filoop_managed", JSON.stringify(managed));
+      window.history.pushState({}, "", `/${data.room_code}`);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -233,11 +252,16 @@ function CreateRoom() {
 
   const handleDelete = async () => {
     if (!result) return;
+    const codeToDelete = result.room_code;
     try {
-      await apiDeleteRoom(result.room_code);
+      await apiDeleteRoom(codeToDelete);
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      delete managed[codeToDelete];
+      localStorage.setItem("filoop_managed", JSON.stringify(managed));
       setResult(null);
       setFile(null);
       setProgress(0);
+      window.history.pushState({}, "", "/");
     } catch (e) {
       setError(e.message);
     }
@@ -286,13 +310,16 @@ function CreateRoom() {
           </div>
 
           {uploading && (
-            <div className="w-full max-w-md space-y-2">
+            <div className="w-full max-w-md space-y-2 animate-in fade-in duration-300">
               <div className="flex justify-between text-xs font-mono text-on-surface-variant uppercase tracking-widest">
-                <span>Uploading...</span>
+                <span>{progress >= 99 ? "Finalizing Loop..." : "Syncing to Cloud..."}</span>
                 <span>{progress}%</span>
               </div>
-              <div className="h-1 w-full bg-surface-container rounded-full overflow-hidden">
-                <div className="h-full bg-primary transition-all duration-300" style={{ width: `${progress}%` }}></div>
+              <div className="h-2 w-full bg-surface-container rounded-full overflow-hidden shadow-inner">
+                <div
+                  className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 ease-out"
+                  style={{ width: `${progress}%` }}
+                ></div>
               </div>
             </div>
           )}
@@ -342,7 +369,11 @@ function CreateRoom() {
           <div className="flex flex-col md:flex-row gap-4 w-full justify-center">
             <button
               className="bg-surface-container text-on-surface px-8 py-4 rounded-full font-headline font-bold hover:bg-surface-container-high transition-all active:scale-95"
-              onClick={() => { setFile(null); setResult(null); }}
+              onClick={() => {
+                setFile(null);
+                setResult(null);
+                window.history.pushState({}, "", "/");
+              }}
             >
               New Loop
             </button>
@@ -522,8 +553,13 @@ export default function App() {
   const initialRoomCode = pathRoom || searchRoom || "";
 
   useEffect(() => {
-    if (initialRoomCode && tab !== "receive") {
-      setTab("receive");
+    if (initialRoomCode) {
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      if (managed[initialRoomCode]) {
+        setTab("send");
+      } else {
+        setTab("receive");
+      }
     }
   }, [initialRoomCode]);
 
@@ -570,18 +606,13 @@ export default function App() {
             </button>
           </nav>
         </div>
-        <div className="flex items-center gap-4">
-          <button className="p-2 rounded-full hover:bg-[#1f2c41]/50 transition-all duration-300 active:scale-95 text-[#a3abbd]">
-            <span className="material-symbols-outlined">account_circle</span>
-          </button>
-        </div>
       </header>
 
       <main className="flex-grow flex flex-col items-center justify-center relative px-6 pt-32 pb-12">
         <div className="absolute inset-0 kinetic-grid pointer-events-none"></div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[800px] aspect-square radial-glow pointer-events-none"></div>
 
-        {tab === "send" ? <CreateRoom /> : <JoinRoom initialCode={initialRoomCode} />}
+        {tab === "send" ? <CreateRoom initialCode={initialRoomCode} /> : <JoinRoom initialCode={initialRoomCode} />}
       </main>
 
       <footer className="w-full flex flex-col items-center gap-4 px-6 py-8 bg-[#060e1b] border-t border-[#404857]/10 z-10">
