@@ -27,13 +27,21 @@ function generateRoomCode(length = 6) {
   return result;
 }
 
+function getFileIcon(mime = "") {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "movie";
+  if (mime.startsWith("audio/")) return "audiotrack";
+  if (mime.includes("pdf"))      return "description";
+  if (mime.includes("zip") || mime.includes("tar") || mime.includes("rar")) return "archive";
+  return "draft";
+}
+
 // ───────────────────────────────────────────
 // API CALLS (Supabase)
 // ───────────────────────────────────────────
 async function apiCreateRoom(file, onProgress) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  // 1. Generate unique room code
   let roomCode = "";
   let isUnique = false;
   while (!isUnique) {
@@ -46,18 +54,25 @@ async function apiCreateRoom(file, onProgress) {
     if (!data) isUnique = true;
   }
 
-  // 2. Upload file to Storage
   const fileExt = file.name.split(".").pop();
   const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
   const filePath = `${roomCode}/${fileName}`;
 
+  // REAL-TIME UPLOAD PROGRESS
+  console.log("Starting upload for:", filePath);
   const { data: uploadData, error: uploadError } = await supabase.storage
     .from("rooms")
-    .upload(filePath, file);
+    .upload(filePath, file, {
+      onUploadProgress: (progress) => {
+        if (!progress.total) return;
+        const percent = Math.min(99, Math.round((progress.loaded / progress.total) * 100));
+        console.log(`Upload progress: ${percent}%`);
+        onProgress(percent);
+      }
+    });
 
   if (uploadError) throw uploadError;
 
-  // 3. Insert into Database
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const { data: roomData, error: dbError } = await supabase
     .from("rooms")
@@ -77,7 +92,6 @@ async function apiCreateRoom(file, onProgress) {
   if (dbError) throw dbError;
 
   onProgress(100);
-
   return roomData;
 }
 
@@ -92,7 +106,6 @@ async function apiGetRoom(code) {
 
   if (error || !data) throw new Error("Room not found");
 
-  // Expiry check
   if (new Date(data.expires_at) < new Date() || !data.is_active) {
     throw new Error("This room has expired.");
   }
@@ -103,7 +116,6 @@ async function apiGetRoom(code) {
 async function apiDeleteRoom(code) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  // Get room info first to get file path
   const { data: room } = await supabase
     .from("rooms")
     .select("file_path")
@@ -111,11 +123,9 @@ async function apiDeleteRoom(code) {
     .maybeSingle();
 
   if (room) {
-    // Delete from storage
     await supabase.storage.from("rooms").remove([room.file_path]);
   }
 
-  // Delete from DB
   const { error } = await supabase
     .from("rooms")
     .delete()
@@ -126,560 +136,10 @@ async function apiDeleteRoom(code) {
 }
 
 // ───────────────────────────────────────────
-// STYLES (injected once)
-// ───────────────────────────────────────────
-const STYLES = `
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap');
-
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --bg:       #0a0a0f;
-    --surface:  #111118;
-    --border:   #1f1f2e;
-    --accent:   #7c3aed;
-    --accent2:  #06b6d4;
-    --green:    #22c55e;
-    --red:      #ef4444;
-    --muted:    #4b5563;
-    --text:     #e2e8f0;
-    --sub:      #94a3b8;
-    --mono:     'Space Mono', monospace;
-    --sans:     'Syne', sans-serif;
-  }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    min-height: 100vh;
-    overflow-x: hidden;
-  }
-
-  /* animated grid bg */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image:
-      linear-gradient(rgba(124,58,237,0.04) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(124,58,237,0.04) 1px, transparent 1px);
-    background-size: 48px 48px;
-    pointer-events: none;
-    z-index: 0;
-  }
-
-  #root { position: relative; z-index: 1; }
-
-  .app {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 48px 16px 80px;
-  }
-
-  /* HEADER */
-  .header {
-    text-align: center;
-    margin-bottom: 56px;
-  }
-  .header-badge {
-    display: inline-block;
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--accent2);
-    border: 1px solid var(--accent2);
-    padding: 4px 12px;
-    border-radius: 2px;
-    margin-bottom: 20px;
-    opacity: 0.8;
-  }
-  .header h1 {
-    font-size: clamp(36px, 6vw, 64px);
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    line-height: 1;
-    background: linear-gradient(135deg, #fff 0%, var(--accent) 60%, var(--accent2) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-  .header p {
-    margin-top: 12px;
-    color: var(--sub);
-    font-size: 15px;
-    font-family: var(--mono);
-  }
-
-  /* CARD */
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 32px;
-    width: 100%;
-    max-width: 520px;
-    position: relative;
-    overflow: hidden;
-  }
-  .card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
-    opacity: 0.5;
-  }
-
-  .card + .card {
-    margin-top: 20px;
-  }
-
-  .card-title {
-    font-size: 11px;
-    font-family: var(--mono);
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .card-title::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: var(--border);
-  }
-
-  /* TABS */
-  .tabs {
-    display: flex;
-    gap: 0;
-    margin-bottom: 0;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-    width: 100%;
-    max-width: 520px;
-    margin-bottom: 4px;
-  }
-  .tab {
-    flex: 1;
-    padding: 12px;
-    font-family: var(--mono);
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    background: var(--surface);
-    color: var(--muted);
-    border: none;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .tab.active {
-    background: var(--accent);
-    color: #fff;
-  }
-  .tab:hover:not(.active) {
-    background: var(--border);
-    color: var(--text);
-  }
-
-  /* DROP ZONE */
-  .dropzone {
-    border: 2px dashed var(--border);
-    border-radius: 8px;
-    padding: 40px 20px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s;
-    position: relative;
-  }
-  .dropzone.drag-over {
-    border-color: var(--accent);
-    background: rgba(124,58,237,0.05);
-  }
-  .dropzone:hover {
-    border-color: var(--accent);
-  }
-  .dropzone-icon {
-    font-size: 36px;
-    margin-bottom: 12px;
-    display: block;
-  }
-  .dropzone-text {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--sub);
-    line-height: 1.8;
-  }
-  .dropzone-text strong {
-    color: var(--accent2);
-  }
-  .dropzone input[type=file] {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    cursor: pointer;
-  }
-
-  /* FILE PREVIEW */
-  .file-preview {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 14px;
-    background: rgba(124,58,237,0.07);
-    border: 1px solid rgba(124,58,237,0.2);
-    border-radius: 8px;
-    margin-top: 16px;
-  }
-  .file-preview-icon {
-    font-size: 28px;
-    flex-shrink: 0;
-  }
-  .file-preview-info {
-    flex: 1;
-    overflow: hidden;
-  }
-  .file-preview-name {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .file-preview-size {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 2px;
-  }
-  .file-preview-remove {
-    background: none;
-    border: none;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 18px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    transition: color 0.2s;
-  }
-  .file-preview-remove:hover { color: var(--red); }
-
-  /* PROGRESS BAR */
-  .progress-wrap {
-    margin-top: 16px;
-  }
-  .progress-label {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--sub);
-    margin-bottom: 6px;
-    display: flex;
-    justify-content: space-between;
-  }
-  .progress-bar {
-    height: 4px;
-    background: var(--border);
-    border-radius: 999px;
-    overflow: hidden;
-  }
-  .progress-fill {
-    height: 100%;
-    background: linear-gradient(90deg, var(--accent), var(--accent2));
-    border-radius: 999px;
-    transition: width 0.3s ease;
-  }
-
-  /* BUTTONS */
-  .btn {
-    width: 100%;
-    margin-top: 20px;
-    padding: 14px;
-    border: none;
-    border-radius: 8px;
-    font-family: var(--mono);
-    font-size: 13px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-  }
-  .btn-primary {
-    background: var(--accent);
-    color: #fff;
-  }
-  .btn-primary:hover:not(:disabled) {
-    background: #6d28d9;
-    transform: translateY(-1px);
-    box-shadow: 0 8px 24px rgba(124,58,237,0.3);
-  }
-  .btn-primary:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  .btn-secondary {
-    background: transparent;
-    color: var(--sub);
-    border: 1px solid var(--border);
-  }
-  .btn-secondary:hover {
-    border-color: var(--muted);
-    color: var(--text);
-  }
-  .btn-danger {
-    background: transparent;
-    color: var(--red);
-    border: 1px solid rgba(239,68,68,0.3);
-    margin-top: 10px;
-  }
-  .btn-danger:hover {
-    background: rgba(239,68,68,0.08);
-  }
-  .btn-green {
-    background: var(--green);
-    color: #000;
-    font-weight: 700;
-    margin-top: 10px;
-  }
-  .btn-green:hover {
-    background: #16a34a;
-    transform: translateY(-1px);
-  }
-
-  /* INPUT */
-  .input-wrap { position: relative; }
-  .input-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 8px;
-  }
-  .input {
-    width: 100%;
-    padding: 13px 16px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    font-family: var(--mono);
-    font-size: 20px;
-    letter-spacing: 0.25em;
-    text-transform: uppercase;
-    text-align: center;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  .input::placeholder {
-    color: var(--muted);
-    letter-spacing: 0.1em;
-    font-size: 14px;
-    text-transform: none;
-  }
-  .input:focus { border-color: var(--accent); }
-
-  /* ROOM CODE DISPLAY */
-  .room-code-display {
-    text-align: center;
-    padding: 28px 16px;
-  }
-  .room-code-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 12px;
-  }
-  .room-code-chars {
-    display: flex;
-    justify-content: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .room-code-char {
-    width: 52px;
-    height: 60px;
-    background: var(--bg);
-    border: 1px solid var(--accent);
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: var(--mono);
-    font-size: 26px;
-    font-weight: 700;
-    color: var(--accent2);
-    box-shadow: 0 0 12px rgba(124,58,237,0.15);
-    animation: popIn 0.3s ease backwards;
-  }
-  @keyframes popIn {
-    from { transform: scale(0.7); opacity: 0; }
-    to   { transform: scale(1);   opacity: 1; }
-  }
-
-  /* COPY BUTTON */
-  .copy-row {
-    display: flex;
-    gap: 8px;
-    margin-top: 16px;
-  }
-  .copy-btn {
-    flex: 1;
-    padding: 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--sub);
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .copy-btn:hover { border-color: var(--accent2); color: var(--accent2); }
-  .copy-btn.copied { border-color: var(--green); color: var(--green); }
-
-  /* FILE META */
-  .meta-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    margin-top: 16px;
-  }
-  .meta-item {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 10px 12px;
-  }
-  .meta-item-label {
-    font-family: var(--mono);
-    font-size: 9px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 4px;
-  }
-  .meta-item-value {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--text);
-    word-break: break-all;
-  }
-
-  /* ALERTS */
-  .alert {
-    padding: 12px 14px;
-    border-radius: 6px;
-    font-family: var(--mono);
-    font-size: 12px;
-    margin-top: 16px;
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    line-height: 1.5;
-  }
-  .alert-error {
-    background: rgba(239,68,68,0.07);
-    border: 1px solid rgba(239,68,68,0.25);
-    color: #fca5a5;
-  }
-  .alert-success {
-    background: rgba(34,197,94,0.07);
-    border: 1px solid rgba(34,197,94,0.25);
-    color: #86efac;
-  }
-
-  /* DOWNLOAD count badge */
-  .dl-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--accent2);
-    background: rgba(6,182,212,0.08);
-    border: 1px solid rgba(6,182,212,0.2);
-    border-radius: 4px;
-    padding: 2px 8px;
-    margin-left: 8px;
-  }
-
-  /* SPINNER */
-  .spinner {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid rgba(255,255,255,0.2);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* EXPIRY bar */
-  .expiry-bar-wrap {
-    margin-top: 16px;
-  }
-  .expiry-bar-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--muted);
-    margin-bottom: 6px;
-    display: flex;
-    justify-content: space-between;
-  }
-  .expiry-bar {
-    height: 3px;
-    background: var(--border);
-    border-radius: 999px;
-    overflow: hidden;
-  }
-  .expiry-fill {
-    height: 100%;
-    background: linear-gradient(90deg, var(--green), var(--accent2));
-    border-radius: 999px;
-  }
-
-  @media (max-width: 480px) {
-    .card { padding: 24px 20px; }
-    .room-code-char { width: 44px; height: 52px; font-size: 22px; }
-    .meta-grid { grid-template-columns: 1fr; }
-  }
-`;
-
-function getFileIcon(mime = "") {
-  if (mime.startsWith("image/")) return "🖼️";
-  if (mime.startsWith("video/")) return "🎬";
-  if (mime.startsWith("audio/")) return "🎵";
-  if (mime.includes("pdf"))      return "📄";
-  if (mime.includes("zip") || mime.includes("tar") || mime.includes("rar")) return "🗜️";
-  if (mime.includes("word") || mime.includes("document")) return "📝";
-  if (mime.includes("sheet") || mime.includes("excel"))   return "📊";
-  return "📁";
-}
-
-// ───────────────────────────────────────────
 // COMPONENT: RoomCodeDisplay
 // ───────────────────────────────────────────
 function RoomCodeDisplay({ code }) {
   const [copied, setCopied] = useState(false);
-  const [copiedLink, setCopiedLink] = useState(false);
 
   const copyCode = () => {
     navigator.clipboard.writeText(code);
@@ -688,38 +148,46 @@ function RoomCodeDisplay({ code }) {
   };
 
   const copyLink = () => {
-    navigator.clipboard.writeText(`${window.location.origin}?room=${code}`);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    navigator.clipboard.writeText(`${window.location.origin}/${code}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className="room-code-display">
-      <div className="room-code-label">Your Room Code</div>
-      <div className="room-code-chars">
+    <div className="flex flex-col items-center gap-8 w-full animate-in fade-in slide-in-from-bottom-4 duration-700">
+      <div className="flex items-center gap-2 md:gap-3">
         {code.split("").map((ch, i) => (
-          <div
-            key={i}
-            className="room-code-char"
-            style={{ animationDelay: `${i * 0.07}s` }}
-          >
-            {ch}
+          <div key={i} className="flex items-center gap-2 md:gap-3">
+             <div className="w-10 h-14 md:w-16 md:h-24 bg-surface-container border border-outline-variant/20 rounded-lg flex items-center justify-center text-2xl md:text-5xl font-mono font-bold text-primary shadow-[0_10px_30px_rgba(0,0,0,0.3)] border-b-primary/40">
+              {ch}
+            </div>
+            {i < code.length - 1 && (
+              <div className="text-on-surface-variant font-mono text-xl md:text-3xl">-</div>
+            )}
           </div>
         ))}
       </div>
-      <div className="copy-row" style={{ marginTop: 20 }}>
-        <button
-          className={`copy-btn ${copied ? "copied" : ""}`}
-          onClick={copyCode}
-        >
-          {copied ? "✓ Copied!" : "Copy Code"}
-        </button>
-        <button
-          className={`copy-btn ${copiedLink ? "copied" : ""}`}
-          onClick={copyLink}
-        >
-          {copiedLink ? "✓ Copied!" : "Copy Link"}
-        </button>
+      <div className="flex flex-col items-center gap-4">
+        <p className="text-on-surface-variant text-sm font-label flex items-center gap-2">
+          <span className="material-symbols-outlined text-sm">info</span>
+          Share this code or link to allow someone to pull your loop.
+        </p>
+        <div className="flex gap-4">
+          <button
+            onClick={copyCode}
+            className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-sm">{copied ? "check" : "content_copy"}</span>
+            {copied ? "Copied!" : "Copy Code"}
+          </button>
+          <button
+            onClick={copyLink}
+            className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-sm">link</span>
+            Copy Link
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -728,7 +196,7 @@ function RoomCodeDisplay({ code }) {
 // ───────────────────────────────────────────
 // COMPONENT: CreateRoom
 // ───────────────────────────────────────────
-function CreateRoom() {
+function CreateRoom({ initialCode }) {
   const [file, setFile]         = useState(null);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -736,6 +204,15 @@ function CreateRoom() {
   const [error, setError]       = useState("");
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef();
+
+  useEffect(() => {
+    if (initialCode) {
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      if (managed[initialCode]) {
+        setResult(managed[initialCode]);
+      }
+    }
+  }, [initialCode]);
 
   const handleFile = (f) => {
     if (!f) return;
@@ -759,6 +236,11 @@ function CreateRoom() {
     try {
       const data = await apiCreateRoom(file, setProgress);
       setResult(data);
+      // PERSIST HOST STATE
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      managed[data.room_code] = data;
+      localStorage.setItem("filoop_managed", JSON.stringify(managed));
+      window.history.pushState({}, "", `/${data.room_code}`);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -768,130 +250,135 @@ function CreateRoom() {
 
   const handleDelete = async () => {
     if (!result) return;
+    const codeToDelete = result.room_code;
     try {
-      await apiDeleteRoom(result.room_code);
+      await apiDeleteRoom(codeToDelete);
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      delete managed[codeToDelete];
+      localStorage.setItem("filoop_managed", JSON.stringify(managed));
       setResult(null);
       setFile(null);
       setProgress(0);
+      window.history.pushState({}, "", "/");
     } catch (e) {
       setError(e.message);
     }
   };
 
-  const expiryPct = result
-    ? Math.max(
-        0,
-        ((new Date(result.expires_at) - new Date()) /
-          (24 * 60 * 60 * 1000)) *
-          100
-      )
-    : 100;
-
   return (
-    <div>
+    <div className="w-full flex flex-col items-center space-y-12 relative z-10">
       {!result ? (
         <>
+          <div className="text-center space-y-4">
+            <h1 className="text-5xl md:text-7xl font-headline font-bold tracking-tighter text-on-surface">
+              Drop it. Loop it. <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Done.</span>
+            </h1>
+            <p className="text-on-surface-variant font-body text-lg max-w-lg mx-auto">
+              Ultra-fast, ephemeral file sharing. No accounts. No logs. Just flow.
+            </p>
+          </div>
+
           <div
-            className={`dropzone ${dragOver ? "drag-over" : ""}`}
+            className={`w-full aspect-[16/9] md:aspect-[21/9] flex items-center justify-center p-1 rounded-xl group cursor-pointer transition-all duration-500 ${dragOver ? 'scale-[1.02]' : ''}`}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
             onClick={() => inputRef.current?.click()}
           >
-            <span className="dropzone-icon">📤</span>
-            <div className="dropzone-text">
-              <strong>Click to browse</strong> or drag a file here
-              <br />Any file type · Up to any size
+            <div className="w-full h-full dashed-portal rounded-xl flex flex-col items-center justify-center gap-4 bg-surface-container-low/40 backdrop-blur-md hover:bg-surface-container-high/60 transition-all duration-500 relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+              <div className="flex flex-col items-center gap-4 relative z-10">
+                <div className="w-16 h-16 rounded-full bg-surface-container-highest flex items-center justify-center text-primary shadow-[0_0_20px_rgba(0,245,196,0.2)]">
+                  <span className="material-symbols-outlined text-4xl">cloud_upload</span>
+                </div>
+                <p className="text-xl font-headline font-medium text-on-surface group-hover:text-primary transition-colors">
+                  {file ? file.name : "Drag and drop your files here"}
+                </p>
+                <p className="text-sm font-mono text-on-surface-variant uppercase tracking-widest">
+                  {file ? formatBytes(file.size) : "Max 2GB per loop"}
+                </p>
+              </div>
             </div>
             <input
               ref={inputRef}
               type="file"
-              style={{ display: "none" }}
+              className="hidden"
               onChange={(e) => handleFile(e.target.files[0])}
             />
           </div>
 
-          {file && (
-            <div className="file-preview">
-              <div className="file-preview-icon">{getFileIcon(file.type)}</div>
-              <div className="file-preview-info">
-                <div className="file-preview-name">{file.name}</div>
-                <div className="file-preview-size">{formatBytes(file.size)}</div>
-              </div>
-              <button
-                className="file-preview-remove"
-                onClick={(e) => { e.stopPropagation(); setFile(null); }}
-              >✕</button>
-            </div>
-          )}
-
           {uploading && (
-            <div className="progress-wrap">
-              <div className="progress-label">
-                <span>Uploading…</span>
+            <div className="w-full max-w-md space-y-2">
+              <div className="flex justify-between text-xs font-mono text-on-surface-variant uppercase tracking-widest">
+                <span>Uploading...</span>
                 <span>{progress}%</span>
               </div>
-              <div className="progress-bar">
-                <div className="progress-fill" style={{ width: `${progress}%` }} />
+              <div className="h-1 w-full bg-surface-container rounded-full overflow-hidden">
+                <div className="h-full bg-primary transition-all duration-300" style={{ width: `${progress}%` }}></div>
               </div>
             </div>
           )}
 
           {error && (
-            <div className="alert alert-error">⚠️ {error}</div>
+            <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
+              <span className="material-symbols-outlined">error</span>
+              {error}
+            </div>
           )}
 
           <button
-            className="btn btn-primary"
+            className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={!file || uploading}
             onClick={handleUpload}
           >
-            {uploading ? <><span className="spinner" /> Creating Room…</> : "⚡ Create Room"}
+            {uploading ? "Creating Loop..." : "Create Loop"}
           </button>
         </>
       ) : (
         <>
-          <div className="alert alert-success">
-            ✅ Room created! Share the code below with anyone.
+          <div className="text-center space-y-4">
+            <h1 className="text-4xl md:text-5xl font-headline font-bold tracking-tighter text-on-surface">
+              Loop <span className="text-primary">Ready</span>
+            </h1>
+            <p className="text-on-surface-variant font-body text-lg">
+              Anyone with this code can download your file.
+            </p>
           </div>
 
           <RoomCodeDisplay code={result.room_code} />
 
-          <div className="meta-grid">
-            <div className="meta-item">
-              <div className="meta-item-label">File</div>
-              <div className="meta-item-value">{getFileIcon(result.mime_type)} {result.file_name}</div>
+          <div className="w-full max-w-xl bg-surface-container/40 backdrop-blur-sm p-6 rounded-lg border border-outline-variant/10 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-lg bg-primary-container/10 flex items-center justify-center text-primary">
+              <span className="material-symbols-outlined">{getFileIcon(result.mime_type)}</span>
             </div>
-            <div className="meta-item">
-              <div className="meta-item-label">Size</div>
-              <div className="meta-item-value">{formatBytes(result.file_size)}</div>
+            <div className="flex-grow min-w-0">
+              <p className="text-on-surface font-medium truncate">{result.file_name}</p>
+              <p className="text-on-surface-variant text-xs font-mono">{formatBytes(result.file_size)} • {timeLeft(result.expires_at)}</p>
             </div>
-            <div className="meta-item">
-              <div className="meta-item-label">Expires</div>
-              <div className="meta-item-value">{timeLeft(result.expires_at)}</div>
-            </div>
-            <div className="meta-item">
-              <div className="meta-item-label">Downloads</div>
-              <div className="meta-item-value">{result.download_count}</div>
+            <div className="flex items-center gap-2 text-on-surface-variant text-xs font-mono">
+              <span className="material-symbols-outlined text-sm">download</span>
+              {result.download_count}
             </div>
           </div>
 
-          <div className="expiry-bar-wrap">
-            <div className="expiry-bar-label">
-              <span>Room lifetime</span>
-              <span>{timeLeft(result.expires_at)}</span>
-            </div>
-            <div className="expiry-bar">
-              <div className="expiry-fill" style={{ width: `${expiryPct}%` }} />
-            </div>
+          <div className="flex flex-col md:flex-row gap-4 w-full justify-center">
+            <button
+              className="bg-surface-container text-on-surface px-8 py-4 rounded-full font-headline font-bold hover:bg-surface-container-high transition-all active:scale-95"
+              onClick={() => {
+                setFile(null);
+                setResult(null);
+                window.history.pushState({}, "", "/");
+              }}
+            >
+              New Loop
+            </button>
+            <button
+              className="bg-error-container/20 text-error px-8 py-4 rounded-full font-headline font-bold hover:bg-error-container/30 transition-all active:scale-95"
+              onClick={handleDelete}
+            >
+              Destroy Loop
+            </button>
           </div>
-
-          <button className="btn btn-secondary" onClick={() => { setFile(null); setResult(null); }}>
-            ＋ Create Another Room
-          </button>
-          <button className="btn btn-danger" onClick={handleDelete}>
-            🗑 Close & Delete Room
-          </button>
         </>
       )}
     </div>
@@ -906,23 +393,28 @@ function JoinRoom({ initialCode = "" }) {
   const [room, setRoom]       = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
-  const [dlMsg, setDlMsg]     = useState("");
 
-  const handleJoin = async () => {
-    if (code.trim().length < 6) return;
+  const handleJoin = useCallback(async (joinCode) => {
+    const cleanCode = (joinCode || code).trim().toUpperCase();
+    if (cleanCode.length < 6) return;
     setLoading(true);
     setError("");
     setRoom(null);
-    setDlMsg("");
     try {
-      const data = await apiGetRoom(code.trim());
+      const data = await apiGetRoom(cleanCode);
       setRoom(data);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, [code]);
+
+  useEffect(() => {
+    if (initialCode && initialCode.length === 6) {
+      handleJoin(initialCode);
+    }
+  }, [initialCode, handleJoin]);
 
   const handleDownload = async () => {
     if (!supabase) return;
@@ -933,9 +425,9 @@ function JoinRoom({ initialCode = "" }) {
 
       if (error) throw error;
 
-      window.open(data.signedUrl, "_blank");
+      // IOS COMPATIBLE DOWNLOAD
+      window.location.href = data.signedUrl;
 
-      // Update download count
       const { data: updatedRoom } = await supabase
         .from("rooms")
         .update({ download_count: room.download_count + 1 })
@@ -943,94 +435,97 @@ function JoinRoom({ initialCode = "" }) {
         .select()
         .single();
 
-      if (updatedRoom) {
-        setRoom(updatedRoom);
-      }
-
-      setDlMsg("Download started!");
-      setTimeout(() => setDlMsg(""), 3000);
+      if (updatedRoom) setRoom(updatedRoom);
     } catch (e) {
-      setError("Failed to generate download link: " + e.message);
+      setError("Download failed: " + e.message);
     }
   };
 
-  const expiryPct = room
-    ? Math.max(
-        0,
-        ((new Date(room.expires_at) - new Date()) / (24 * 60 * 60 * 1000)) * 100
-      )
-    : 100;
-
   return (
-    <div>
-      <div className="input-label">Enter Room Code</div>
-      <input
-        className="input"
-        placeholder="e.g. XK92PL"
-        maxLength={6}
-        value={code}
-        onChange={(e) => {
-          setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""));
-          setRoom(null);
-          setError("");
-        }}
-        onKeyDown={(e) => e.key === "Enter" && handleJoin()}
-      />
-
-      {error && <div className="alert alert-error">⚠️ {error}</div>}
-
-      <button
-        className="btn btn-primary"
-        disabled={code.length < 6 || loading}
-        onClick={handleJoin}
-      >
-        {loading ? <><span className="spinner" /> Looking up room…</> : "🔍 Join Room"}
-      </button>
-
-      {room && (
+    <div className="w-full flex flex-col items-center space-y-12 relative z-10">
+      {!room ? (
         <>
-          <div style={{ marginTop: 24 }}>
-            <div className="card-title">
-              Room {room.room_code}
-            </div>
-            <div className="file-preview" style={{ marginTop: 0 }}>
-              <div className="file-preview-icon">{getFileIcon(room.mime_type)}</div>
-              <div className="file-preview-info">
-                <div className="file-preview-name">{room.file_name}</div>
-                <div className="file-preview-size">
-                  {formatBytes(room.file_size)}
-                  <span className="dl-badge">⬇ {room.download_count}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="meta-grid">
-              <div className="meta-item">
-                <div className="meta-item-label">Type</div>
-                <div className="meta-item-value">{room.mime_type?.split("/")[1] || "file"}</div>
-              </div>
-              <div className="meta-item">
-                <div className="meta-item-label">Expires</div>
-                <div className="meta-item-value">{timeLeft(room.expires_at)}</div>
-              </div>
-            </div>
-
-            <div className="expiry-bar-wrap">
-              <div className="expiry-bar-label">
-                <span>Time remaining</span>
-                <span>{timeLeft(room.expires_at)}</span>
-              </div>
-              <div className="expiry-bar">
-                <div className="expiry-fill" style={{ width: `${expiryPct}%` }} />
-              </div>
-            </div>
-
-            {dlMsg && <div className="alert alert-success">✅ {dlMsg}</div>}
-
-            <button className="btn btn-green" onClick={handleDownload}>
-              ⬇ Download File
-            </button>
+          <div className="text-center space-y-4">
+            <h1 className="text-5xl md:text-7xl font-headline font-bold tracking-tighter text-on-surface">
+              Enter the <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Loop.</span>
+            </h1>
+            <p className="text-on-surface-variant font-body text-lg max-w-lg mx-auto">
+              Ready to receive? Input the 6-character code below.
+            </p>
           </div>
+
+          <div className="w-full max-w-md">
+            <input
+              type="text"
+              maxLength={6}
+              placeholder="E.G. XK92PL"
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+              onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+              className="w-full bg-surface-container border border-outline-variant/20 rounded-2xl p-8 text-center text-4xl md:text-5xl font-mono font-bold text-primary tracking-[0.5em] focus:border-primary/40 focus:ring-1 focus:ring-primary/40 outline-none transition-all placeholder:text-on-surface-variant/20 placeholder:tracking-normal"
+              autoFocus
+            />
+          </div>
+
+          {error && (
+            <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
+              <span className="material-symbols-outlined">error</span>
+              {error}
+            </div>
+          )}
+
+          <button
+            className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50"
+            disabled={code.length < 6 || loading}
+            onClick={() => handleJoin()}
+          >
+            {loading ? "Joining Loop..." : "Join Loop"}
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="text-center space-y-4">
+            <h1 className="text-4xl md:text-5xl font-headline font-bold tracking-tighter text-on-surface">
+              File <span className="text-primary">Located</span>
+            </h1>
+            <p className="text-on-surface-variant font-body text-lg">
+              This loop will vanish in {timeLeft(room.expires_at)}.
+            </p>
+          </div>
+
+          <div className="w-full max-w-xl bg-surface-container-high p-8 rounded-2xl border border-primary/20 shadow-[0_20px_40px_rgba(0,245,196,0.1)] flex flex-col items-center gap-6">
+            <div className="w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+              <span className="material-symbols-outlined text-5xl">{getFileIcon(room.mime_type)}</span>
+            </div>
+            <div className="text-center space-y-1">
+              <h2 className="text-2xl font-headline font-bold text-on-surface">{room.file_name}</h2>
+              <p className="text-on-surface-variant font-mono text-sm uppercase tracking-widest">{formatBytes(room.file_size)} • {room.mime_type.split('/')[1] || 'FILE'}</p>
+            </div>
+            <button
+              className="w-full bg-primary text-[#004535] py-5 rounded-xl text-xl font-headline font-bold shadow-[0_10px_30px_rgba(0,245,196,0.2)] hover:shadow-[0_15px_40px_rgba(0,245,196,0.4)] transition-all active:scale-[0.98]"
+              onClick={handleDownload}
+            >
+              DOWNLOAD
+            </button>
+            <div className="flex items-center gap-4 text-on-surface-variant text-xs font-mono uppercase tracking-tighter">
+              <span className="flex items-center gap-1">
+                <span className="material-symbols-outlined text-sm">download</span>
+                {room.download_count} Downloads
+              </span>
+              <span className="w-1 h-1 bg-outline-variant rounded-full"></span>
+              <span className="flex items-center gap-1">
+                <span className="material-symbols-outlined text-sm">schedule</span>
+                Expires in {timeLeft(room.expires_at)}
+              </span>
+            </div>
+          </div>
+
+          <button
+            className="text-on-surface-variant hover:text-primary transition-colors font-headline font-bold"
+            onClick={() => { setRoom(null); setCode(""); }}
+          >
+            ← Back to Join
+          </button>
         </>
       )}
     </div>
@@ -1045,88 +540,86 @@ export default function App() {
   const [supabaseReady, setSupabaseReady] = useState(false);
   const [isChecking, setIsChecking] = useState(true);
 
-  // Auto-fill room code from URL ?room=XXXXXX
-  const urlRoom = new URLSearchParams(window.location.search).get("room");
+  // AUTO-PARSE ROOM FROM PATH OR SEARCH
+  const urlParams = new URLSearchParams(window.location.search);
+  const searchRoom = urlParams.get("room");
+  const pathParts = window.location.pathname.split("/").filter(Boolean);
+  const pathRoom = pathParts.length === 1 && pathParts[0].length === 6 ? pathParts[0] : null;
+  const initialRoomCode = pathRoom || searchRoom || "";
 
   useEffect(() => {
-    if (urlRoom && tab !== "receive") setTab("receive");
-  }, [urlRoom]);
-
-  useEffect(() => {
-    // Check if supabase is initialized
-    if (supabase) {
-      setSupabaseReady(true);
+    if (initialRoomCode) {
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      if (managed[initialRoomCode]) {
+        setTab("send");
+      } else {
+        setTab("receive");
+      }
     }
+  }, [initialRoomCode]);
+
+  useEffect(() => {
+    if (supabase) setSupabaseReady(true);
     setIsChecking(false);
   }, []);
 
-  if (isChecking) {
-    return (
-      <>
-        <style>{STYLES}</style>
-        <div className="app">
-          <div className="spinner" style={{ width: "40px", height: "40px", borderWidth: "4px" }} />
-        </div>
-      </>
-    );
-  }
+  if (isChecking) return null;
 
-  if (!supabaseReady) {
+  if (!supabaseReady && !window.BYPASS_CONFIG) {
     return (
-      <>
-        <style>{STYLES}</style>
-        <div className="app">
-          <div className="card" style={{ maxWidth: "520px", padding: "24px" }}>
-            <div className="card-title">Configuration Required</div>
-            <div className="alert alert-error" style={{ display: "block", wordBreak: "break-word" }}>
-              ⚠️ <strong>Supabase is not configured.</strong>
-              <br /><br />
-              Please set <strong>VITE_SUPABASE_URL</strong> and <strong>VITE_SUPABASE_ANON_KEY</strong> environment variables.
-              <br /><br />
-              If you are seeing this on Vercel, make sure you have added them in the Project Settings.
-            </div>
+      <div className="min-h-screen bg-surface-dim text-on-surface flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-surface-container p-8 rounded-2xl border border-error/20 text-center space-y-6">
+          <div className="w-16 h-16 bg-error/10 text-error rounded-full flex items-center justify-center mx-auto">
+            <span className="material-symbols-outlined text-4xl">warning</span>
           </div>
+          <h2 className="text-2xl font-headline font-bold">Configuration Required</h2>
+          <p className="text-on-surface-variant">
+            Please set <strong>VITE_SUPABASE_URL</strong> and <strong>VITE_SUPABASE_ANON_KEY</strong> to start using Filoop.
+          </p>
         </div>
-      </>
+      </div>
     );
   }
 
   return (
-    <>
-      <style>{STYLES}</style>
-      <div className="app">
-        <header className="header">
-          <div className="header-badge">Peer File Transfer</div>
-          <h1>DropRoom</h1>
-          <p>Upload a file → get a room code → anyone can receive it</p>
-        </header>
-
-        <div className="tabs">
-          <button
-            className={`tab ${tab === "send" ? "active" : ""}`}
-            onClick={() => setTab("send")}
-          >
-            📤 Send File
-          </button>
-          <button
-            className={`tab ${tab === "receive" ? "active" : ""}`}
-            onClick={() => setTab("receive")}
-          >
-            📥 Receive File
-          </button>
+    <div className="bg-surface-dim text-on-surface font-body selection:bg-primary-container selection:text-on-primary-container min-h-screen flex flex-col overflow-x-hidden">
+      <header className="fixed top-0 w-full flex justify-between items-center px-6 py-4 bg-[#060e1b]/80 backdrop-blur-xl z-50 border-b border-[#404857]/10 shadow-[0_20px_40px_rgba(0,245,196,0.08)]">
+        <div className="flex items-center gap-8">
+          <button onClick={() => setTab('send')} className="text-2xl font-bold bg-gradient-to-r from-[#00f5c4] to-[#a3ff47] bg-clip-text text-transparent font-headline tracking-tight">Filoop</button>
+          <nav className="flex gap-6 items-center">
+            <button
+              className={`font-headline tracking-tight transition-all duration-300 pb-1 ${tab === 'send' ? 'text-primary border-b-2 border-primary' : 'text-[#a3abbd] hover:text-[#e0e8fc]'}`}
+              onClick={() => setTab('send')}
+            >
+              Send
+            </button>
+            <button
+              className={`font-headline tracking-tight transition-all duration-300 pb-1 ${tab === 'receive' ? 'text-primary border-b-2 border-primary' : 'text-[#a3abbd] hover:text-[#e0e8fc]'}`}
+              onClick={() => setTab('receive')}
+            >
+              Receive
+            </button>
+          </nav>
         </div>
-
-        <div className="card">
-          <div className="card-title">
-            {tab === "send" ? "Create a Room" : "Join a Room"}
-          </div>
-          {tab === "send" ? <CreateRoom /> : <JoinRoom initialCode={urlRoom || ""} />}
+        <div className="flex items-center gap-4">
         </div>
+      </header>
 
-        <p style={{ marginTop: 32, fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)", textAlign: "center" }}>
-          Rooms expire after 24 hours · Files are deleted automatically
-        </p>
-      </div>
-    </>
+      <main className="flex-grow flex flex-col items-center justify-center relative px-6 pt-32 pb-12">
+        <div className="absolute inset-0 kinetic-grid pointer-events-none"></div>
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[800px] aspect-square radial-glow pointer-events-none"></div>
+
+        {tab === "send" ? <CreateRoom initialCode={initialRoomCode} /> : <JoinRoom initialCode={initialRoomCode} />}
+      </main>
+
+      <footer className="w-full flex flex-col items-center gap-4 px-6 py-8 bg-[#060e1b] border-t border-[#404857]/10 z-10">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd]">Files loop for 24 hours then vanish · No account needed</p>
+        <div className="flex gap-6">
+          <a className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Privacy</a>
+          <a className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Terms</a>
+          <a className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Support</a>
+        </div>
+      </footer>
+    </div>
   );
 }
