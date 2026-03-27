@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { QRCodeSVG } from 'qrcode.react';
-import { Html5Qrcode } from "html5-qrcode";
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { supabase } from "./supabase";
 
 // ───────────────────────────────────────────
@@ -571,35 +571,60 @@ function JoinRoom({ initialCode = "" }) {
 
   useEffect(() => {
     let scanner = null;
-    if (mode === 'scan') {
-      scanner = new Html5Qrcode("reader");
-      const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+    let isStopping = false;
 
-      const onScanSuccess = (decodedText) => {
-        try {
-          // Extract 6-char code from URL (e.g., origin/CODE)
-          const parts = decodedText.split("/");
-          const scannedCode = parts[parts.length - 1].toUpperCase();
-          if (scannedCode.length === 6) {
-            scanner.stop().then(() => {
-              handleJoin(scannedCode);
-            });
-          }
-        } catch (e) {
-          console.error("Scan processing error:", e);
-        }
-      };
-
-      scanner.start({ facingMode: "environment" }, config, onScanSuccess)
-        .catch(err => {
-          console.error("Camera error:", err);
-          setError("Camera access denied — use the code instead");
+    const startScanner = async () => {
+      try {
+        scanner = new Html5Qrcode("reader", {
+          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+          verbose: false
         });
+
+        const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+        const onScanSuccess = async (decodedText) => {
+          if (isStopping) return;
+          try {
+            const url = new URL(decodedText);
+            const path = url.pathname.split("/").filter(Boolean);
+            const scannedCode = path[0]?.toUpperCase();
+
+            if (scannedCode && scannedCode.length === 6 && /^[A-Z0-9]+$/.test(scannedCode)) {
+              isStopping = true;
+              await scanner.stop();
+              handleJoin(scannedCode);
+            }
+          } catch (e) {
+            const parts = decodedText.split("/").filter(Boolean);
+            const lastPart = parts[parts.length - 1]?.toUpperCase();
+            if (lastPart && lastPart.length === 6 && /^[A-Z0-9]+$/.test(lastPart)) {
+              isStopping = true;
+              await scanner.stop();
+              handleJoin(lastPart);
+            }
+          }
+        };
+
+        await scanner.start({ facingMode: "environment" }, config, onScanSuccess);
+      } catch (err) {
+        console.error("Camera error:", err);
+        setError("Camera access denied — use the code instead");
+      }
+    };
+
+    if (mode === 'scan') {
+      startScanner();
     }
 
     return () => {
-      if (scanner && scanner.isScanning) {
-        scanner.stop().catch(err => console.error("Error stopping scanner:", err));
+      if (scanner && !isStopping) {
+        try {
+          if (scanner.isScanning) {
+            scanner.stop().catch(() => {});
+          }
+        } catch (e) {
+          // Ignore scanner stop errors during unmount/mode change
+        }
       }
     };
   }, [mode, handleJoin]);
