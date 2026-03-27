@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { QRCodeSVG } from 'qrcode.react';
+import { Html5Qrcode } from "html5-qrcode";
 import { supabase } from "./supabase";
 
 // ───────────────────────────────────────────
@@ -185,6 +187,7 @@ async function apiDeleteRoom(code) {
 // ───────────────────────────────────────────
 function RoomCodeDisplay({ code }) {
   const [copied, setCopied] = useState(false);
+  const roomUrl = `${window.location.origin}/${code}`;
 
   const copyCode = () => {
     navigator.clipboard.writeText(code);
@@ -193,7 +196,7 @@ function RoomCodeDisplay({ code }) {
   };
 
   const copyLink = () => {
-    navigator.clipboard.writeText(`${window.location.origin}/${code}`);
+    navigator.clipboard.writeText(roomUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -212,26 +215,43 @@ function RoomCodeDisplay({ code }) {
           </div>
         ))}
       </div>
-      <div className="flex flex-col items-center gap-4">
-        <p className="text-on-surface-variant text-sm font-label flex items-center gap-2">
-          <span className="material-symbols-outlined text-sm">info</span>
-          Share this code or link to allow someone to pull your loop.
-        </p>
-        <div className="flex gap-4">
-          <button
-            onClick={copyCode}
-            className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
-          >
-            <span className="material-symbols-outlined text-sm">{copied ? "check" : "content_copy"}</span>
-            {copied ? "Copied!" : "Copy Code"}
-          </button>
-          <button
-            onClick={copyLink}
-            className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
-          >
-            <span className="material-symbols-outlined text-sm">link</span>
-            Copy Link
-          </button>
+      <div className="flex flex-col items-center gap-6">
+        <div className="flex flex-col items-center gap-4">
+          <p className="text-on-surface-variant text-sm font-label flex items-center gap-2">
+            <span className="material-symbols-outlined text-sm">info</span>
+            Share this code or link to allow someone to pull your loop.
+          </p>
+          <div className="flex gap-4">
+            <button
+              onClick={copyCode}
+              className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
+            >
+              <span className="material-symbols-outlined text-sm">{copied ? "check" : "content_copy"}</span>
+              {copied ? "Copied!" : "Copy Code"}
+            </button>
+            <button
+              onClick={copyLink}
+              className="text-primary hover:text-secondary transition-colors font-mono text-xs uppercase tracking-widest flex items-center gap-2"
+            >
+              <span className="material-symbols-outlined text-sm">link</span>
+              Copy Link
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-col items-center gap-3">
+          <p className="text-on-surface-variant font-mono text-[10px] uppercase tracking-widest opacity-70">
+            Scan to receive
+          </p>
+          <div className="p-4 bg-white/5 rounded-2xl border border-white/10 backdrop-blur-sm">
+            <QRCodeSVG
+              value={roomUrl}
+              size={160}
+              bgColor="transparent"
+              fgColor="#00f5c4"
+              level="H"
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -525,6 +545,7 @@ function JoinRoom({ initialCode = "" }) {
   const [files, setFiles]     = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
+  const [mode, setMode]       = useState("type"); // 'type' | 'scan'
 
   const handleJoin = useCallback(async (joinCode) => {
     const cleanCode = (joinCode || code).trim().toUpperCase();
@@ -548,6 +569,41 @@ function JoinRoom({ initialCode = "" }) {
     }
   }, [initialCode, handleJoin]);
 
+  useEffect(() => {
+    let scanner = null;
+    if (mode === 'scan') {
+      scanner = new Html5Qrcode("reader");
+      const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+      const onScanSuccess = (decodedText) => {
+        try {
+          // Extract 6-char code from URL (e.g., origin/CODE)
+          const parts = decodedText.split("/");
+          const scannedCode = parts[parts.length - 1].toUpperCase();
+          if (scannedCode.length === 6) {
+            scanner.stop().then(() => {
+              handleJoin(scannedCode);
+            });
+          }
+        } catch (e) {
+          console.error("Scan processing error:", e);
+        }
+      };
+
+      scanner.start({ facingMode: "environment" }, config, onScanSuccess)
+        .catch(err => {
+          console.error("Camera error:", err);
+          setError("Camera access denied — use the code instead");
+        });
+    }
+
+    return () => {
+      if (scanner && scanner.isScanning) {
+        scanner.stop().catch(err => console.error("Error stopping scanner:", err));
+      }
+    };
+  }, [mode, handleJoin]);
+
   if (files.length > 0) {
     return <FileLoopDashboard
       roomCode={files[0].room_code}
@@ -564,37 +620,72 @@ function JoinRoom({ initialCode = "" }) {
           Enter the <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Loop.</span>
         </h1>
         <p className="text-on-surface-variant font-body text-lg max-w-lg mx-auto">
-          Ready to receive? Input the 6-character code below.
+          Ready to receive? {mode === 'type' ? 'Input the 6-character code below.' : 'Scan the QR code to pull the loop.'}
         </p>
       </div>
 
-      <div className="w-full max-w-md">
-        <input
-          type="text"
-          maxLength={6}
-          placeholder="E.G. XK92PL"
-          value={code}
-          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
-          onKeyDown={(e) => e.key === "Enter" && handleJoin()}
-          className="w-full bg-surface-container border border-outline-variant/20 rounded-2xl p-8 text-center text-4xl md:text-5xl font-mono font-bold text-primary tracking-[0.5em] focus:border-primary/40 focus:ring-1 focus:ring-primary/40 outline-none transition-all placeholder:text-on-surface-variant/20 placeholder:tracking-normal"
-          autoFocus
-        />
+      {/* PILL TOGGLE */}
+      <div className="bg-surface-container/60 p-1 rounded-full flex gap-1 z-10 backdrop-blur-md border border-outline-variant/10">
+        <button
+          onClick={() => setMode('type')}
+          className={`px-6 py-2 rounded-full font-headline text-sm transition-all duration-300 ${mode === 'type' ? 'bg-primary/10 text-primary shadow-[0_0_15px_rgba(0,245,196,0.1)]' : 'text-on-surface-variant hover:text-on-surface'}`}
+        >
+          Type Code
+        </button>
+        <button
+          onClick={() => setMode('scan')}
+          className={`px-6 py-2 rounded-full font-headline text-sm transition-all duration-300 ${mode === 'scan' ? 'bg-primary/10 text-primary shadow-[0_0_15px_rgba(0,245,196,0.1)]' : 'text-on-surface-variant hover:text-on-surface'}`}
+        >
+          Scan QR Code
+        </button>
       </div>
 
-      {error && (
-        <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
-          <span className="material-symbols-outlined">error</span>
-          {error}
+      {mode === 'type' ? (
+        <>
+          <div className="w-full max-w-md">
+            <input
+              type="text"
+              maxLength={6}
+              placeholder="E.G. XK92PL"
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+              onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+              className="w-full bg-surface-container border border-outline-variant/20 rounded-2xl p-8 text-center text-4xl md:text-5xl font-mono font-bold text-primary tracking-[0.5em] focus:border-primary/40 focus:ring-1 focus:ring-primary/40 outline-none transition-all placeholder:text-on-surface-variant/20 placeholder:tracking-normal"
+              autoFocus
+            />
+          </div>
+
+          {error && (
+            <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
+              <span className="material-symbols-outlined">error</span>
+              {error}
+            </div>
+          )}
+
+          <button
+            className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50"
+            disabled={code.length < 6 || loading}
+            onClick={() => handleJoin()}
+          >
+            {loading ? "Joining Loop..." : "Join Loop"}
+          </button>
+        </>
+      ) : (
+        <div className="w-full max-w-md flex flex-col items-center gap-6">
+          <div id="reader" className="w-full aspect-square rounded-2xl overflow-hidden border border-outline-variant/20 bg-black/20 backdrop-blur-sm"></div>
+
+          <p className="text-on-surface-variant font-mono text-[10px] uppercase tracking-widest opacity-70">
+            Point camera at a Filoop QR code
+          </p>
+
+          {error && (
+            <div className="bg-error-container/20 border border-error/20 p-4 rounded-lg text-error text-sm flex items-center gap-3">
+              <span className="material-symbols-outlined">error</span>
+              {error}
+            </div>
+          )}
         </div>
       )}
-
-      <button
-        className="bg-gradient-to-r from-primary to-secondary text-[#004535] px-12 py-5 rounded-full text-xl font-headline font-bold shadow-[0_10px_40px_rgba(0,245,196,0.3)] hover:shadow-[0_15px_50px_rgba(0,245,196,0.5)] active:scale-95 transition-all duration-300 disabled:opacity-50"
-        disabled={code.length < 6 || loading}
-        onClick={() => handleJoin()}
-      >
-        {loading ? "Joining Loop..." : "Join Loop"}
-      </button>
     </div>
   );
 }
