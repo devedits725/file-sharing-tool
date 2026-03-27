@@ -193,7 +193,7 @@ function RoomCodeDisplay({ code }) {
 // ───────────────────────────────────────────
 // COMPONENT: CreateRoom
 // ───────────────────────────────────────────
-function CreateRoom() {
+function CreateRoom({ initialCode }) {
   const [file, setFile]         = useState(null);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -201,6 +201,15 @@ function CreateRoom() {
   const [error, setError]       = useState("");
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef();
+
+  useEffect(() => {
+    if (initialCode) {
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      if (managed[initialCode]) {
+        setResult(managed[initialCode]);
+      }
+    }
+  }, [initialCode]);
 
   const handleFile = (f) => {
     if (!f) return;
@@ -224,6 +233,11 @@ function CreateRoom() {
     try {
       const data = await apiCreateRoom(file, setProgress);
       setResult(data);
+      // PERSIST HOST STATE
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      managed[data.room_code] = data;
+      localStorage.setItem("filoop_managed", JSON.stringify(managed));
+      window.history.pushState({}, "", `/${data.room_code}`);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -233,11 +247,16 @@ function CreateRoom() {
 
   const handleDelete = async () => {
     if (!result) return;
+    const codeToDelete = result.room_code;
     try {
-      await apiDeleteRoom(result.room_code);
+      await apiDeleteRoom(codeToDelete);
+      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
+      delete managed[codeToDelete];
+      localStorage.setItem("filoop_managed", JSON.stringify(managed));
       setResult(null);
       setFile(null);
       setProgress(0);
+      window.history.pushState({}, "", "/");
     } catch (e) {
       setError(e.message);
     }
