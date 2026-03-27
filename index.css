@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 6, 14, 27;
+    --on-surface: 224, 232, 252;
+    --primary: 0, 245, 196;
+    --secondary: 163, 255, 71;
+  }
+}
+
+.kinetic-grid {
+    background-image:
+        linear-gradient(to right, rgba(64, 72, 87, 0.1) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(64, 72, 87, 0.1) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+
+.radial-glow {
+    background: radial-gradient(circle at 50% 50%, rgba(0, 245, 196, 0.08) 0%, transparent 70%);
+}
+
+.dashed-portal {
+    background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='32' ry='32' stroke='%2300f5c4' stroke-width='2' stroke-dasharray='12%2c 12' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e");
+}
+
+.material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
