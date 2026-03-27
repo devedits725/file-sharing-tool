@@ -59,14 +59,11 @@ async function apiCreateRoom(file, onProgress) {
   const filePath = `${roomCode}/${fileName}`;
 
   // REAL-TIME UPLOAD PROGRESS
-  console.log("Starting upload for:", filePath);
   const { data: uploadData, error: uploadError } = await supabase.storage
     .from("rooms")
     .upload(filePath, file, {
       onUploadProgress: (progress) => {
-        if (!progress.total) return;
-        const percent = Math.min(99, Math.round((progress.loaded / progress.total) * 100));
-        console.log(`Upload progress: ${percent}%`);
+        const percent = Math.round((progress.loaded / progress.total) * 100);
         onProgress(percent);
       }
     });
@@ -364,11 +361,7 @@ function CreateRoom({ initialCode }) {
           <div className="flex flex-col md:flex-row gap-4 w-full justify-center">
             <button
               className="bg-surface-container text-on-surface px-8 py-4 rounded-full font-headline font-bold hover:bg-surface-container-high transition-all active:scale-95"
-              onClick={() => {
-                setFile(null);
-                setResult(null);
-                window.history.pushState({}, "", "/");
-              }}
+              onClick={() => { setFile(null); setResult(null); }}
             >
               New Loop
             </button>
@@ -548,13 +541,8 @@ export default function App() {
   const initialRoomCode = pathRoom || searchRoom || "";
 
   useEffect(() => {
-    if (initialRoomCode) {
-      const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
-      if (managed[initialRoomCode]) {
-        setTab("send");
-      } else {
-        setTab("receive");
-      }
+    if (initialRoomCode && tab !== "receive") {
+      setTab("receive");
     }
   }, [initialRoomCode]);
 
@@ -602,6 +590,9 @@ export default function App() {
           </nav>
         </div>
         <div className="flex items-center gap-4">
+          <button className="p-2 rounded-full hover:bg-[#1f2c41]/50 transition-all duration-300 active:scale-95 text-[#a3abbd]">
+            <span className="material-symbols-outlined">account_circle</span>
+          </button>
         </div>
       </header>
 
@@ -609,7 +600,7 @@ export default function App() {
         <div className="absolute inset-0 kinetic-grid pointer-events-none"></div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[800px] aspect-square radial-glow pointer-events-none"></div>
 
-        {tab === "send" ? <CreateRoom initialCode={initialRoomCode} /> : <JoinRoom initialCode={initialRoomCode} />}
+        {tab === "send" ? <CreateRoom /> : <JoinRoom initialCode={initialRoomCode} />}
       </main>
 
       <footer className="w-full flex flex-col items-center gap-4 px-6 py-8 bg-[#060e1b] border-t border-[#404857]/10 z-10">
