@@ -44,6 +44,8 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
 
   onProgress(5);
   let roomCode = existingCode;
+  let roomId;
+  let expiresAt;
 
   if (!roomCode) {
     let isUnique = false;
@@ -56,6 +58,25 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
         .maybeSingle();
       if (!data) isUnique = true;
     }
+
+    expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const { data: newRoom, error: roomError } = await supabase
+      .from("rooms")
+      .insert([{ room_code: roomCode, expires_at: expiresAt }])
+      .select()
+      .single();
+
+    if (roomError) throw roomError;
+    roomId = newRoom.id;
+  } else {
+    const { data: room, error: roomError } = await supabase
+      .from("rooms")
+      .select("id, expires_at")
+      .eq("room_code", roomCode.toUpperCase())
+      .single();
+    if (roomError) throw roomError;
+    roomId = room.id;
+    expiresAt = room.expires_at;
   }
 
   // Preservation of original filename within roomCode/ prefix
@@ -78,17 +99,15 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
 
   onProgress(98);
 
-  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  const { data: roomData, error: dbError } = await supabase
-    .from("rooms")
+  const { data: fileData, error: dbError } = await supabase
+    .from("files")
     .insert([
       {
-        room_code: roomCode,
+        room_id: roomId,
         file_name: file.name,
         file_path: filePath,
         file_size: file.size,
         mime_type: file.type || "application/octet-stream",
-        expires_at: expiresAt,
       },
     ])
     .select()
@@ -97,46 +116,67 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
   if (dbError) throw dbError;
 
   onProgress(100);
-  return roomData;
+  return { room_code: roomCode, expires_at: expiresAt, ...fileData };
 }
 
 async function apiGetRoom(code) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const { data, error } = await supabase
+  const { data: room, error: roomError } = await supabase
     .from("rooms")
     .select("*")
-    .eq("room_code", code.toUpperCase());
+    .eq("room_code", code.toUpperCase())
+    .maybeSingle();
 
-  if (error || !data || data.length === 0) throw new Error("Room not found");
+  if (roomError || !room) throw new Error("Room not found");
 
-  const latestFile = data[0];
-  if (new Date(latestFile.expires_at) < new Date() || !latestFile.is_active) {
+  if (new Date(room.expires_at) < new Date() || !room.is_active) {
     throw new Error("This room has expired.");
   }
 
-  return data; // Return all files
+  const { data: files, error: filesError } = await supabase
+    .from("files")
+    .select("*")
+    .eq("room_id", room.id);
+
+  if (filesError) throw filesError;
+
+  // Attach room info to each file for component compatibility
+  return files.map(f => ({
+    ...f,
+    room_code: room.room_code,
+    expires_at: room.expires_at
+  }));
 }
 
 async function apiDeleteRoom(code) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const { data: rooms } = await supabase
+  const { data: room } = await supabase
     .from("rooms")
-    .select("file_path")
-    .eq("room_code", code.toUpperCase());
+    .select("id")
+    .eq("room_code", code.toUpperCase())
+    .maybeSingle();
 
-  if (rooms && rooms.length > 0) {
-    const paths = rooms.map(r => r.file_path);
-    await supabase.storage.from("rooms").remove(paths);
+  if (room) {
+    const { data: files } = await supabase
+      .from("files")
+      .select("file_path")
+      .eq("room_id", room.id);
+
+    if (files && files.length > 0) {
+      const paths = files.map(f => f.file_path);
+      await supabase.storage.from("rooms").remove(paths);
+    }
+
+    const { error } = await supabase
+      .from("rooms")
+      .delete()
+      .eq("id", room.id);
+
+    if (error) throw error;
   }
 
-  const { error } = await supabase
-    .from("rooms")
-    .delete()
-    .eq("room_code", code.toUpperCase());
-
-  if (error) throw error;
   return { message: "Room deleted" };
 }
 
@@ -235,8 +275,8 @@ function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
       window.location.href = data.signedUrl;
 
       await supabase
-        .from("rooms")
-        .update({ download_count: file.download_count + 1 })
+        .from("files")
+        .update({ download_count: (file.download_count || 0) + 1 })
         .eq("id", file.id);
 
       onRefresh();
