@@ -42,6 +42,7 @@ function getFileIcon(mime = "") {
 async function apiCreateRoom(file, onProgress) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
+  onProgress(5); // Start the progress feel
   let roomCode = "";
   let isUnique = false;
   while (!isUnique) {
@@ -65,7 +66,8 @@ async function apiCreateRoom(file, onProgress) {
     .upload(filePath, file, {
       onUploadProgress: (progress) => {
         if (!progress.total) return;
-        const percent = Math.round((progress.loaded / progress.total) * 100);
+        // Map 0-100 to 5-95 to leave room for the initial 5 and final DB step
+        const percent = 5 + Math.round((progress.loaded / progress.total) * 90);
         console.log(`Upload progress: ${percent}%`);
         onProgress(percent);
       }
@@ -73,7 +75,7 @@ async function apiCreateRoom(file, onProgress) {
 
   if (uploadError) throw uploadError;
 
-  onProgress(99); // Start DB insertion phase
+  onProgress(98); // Start DB insertion phase
 
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const { data: roomData, error: dbError } = await supabase
@@ -237,6 +239,8 @@ function CreateRoom({ initialCode }) {
     setProgress(0);
     try {
       const data = await apiCreateRoom(file, setProgress);
+      // Let 100% progress and "Finalizing" be seen for a moment
+      await new Promise(res => setTimeout(res, 800));
       setResult(data);
       // PERSIST HOST STATE
       const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
