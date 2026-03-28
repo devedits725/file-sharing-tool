@@ -44,14 +44,33 @@ function getFileIcon(mime = "") {
 async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  onProgress(5);
+  // Initialize progress state
+  const progressState = {
+    stage: 'initializing',
+    percentage: 0,
+    startTime: Date.now()
+  };
+
+  const updateProgress = (stage, percentage) => {
+    progressState.stage = stage;
+    progressState.percentage = percentage;
+    console.log(`[${stage}] ${percentage}%`);
+    onProgress(percentage, stage);
+  };
+
+  updateProgress('initializing', 0);
+  
   let roomCode = existingCode;
   let roomId;
   let expiresAt;
 
+  // Room creation/retrieval stage (0-10%)
+  updateProgress('creating_room', 5);
+  
   if (!roomCode) {
     let isUnique = false;
-    while (!isUnique) {
+    let attempts = 0;
+    while (!isUnique && attempts < 10) {
       roomCode = generateRoomCode();
       const { data } = await supabase
         .from("rooms")
@@ -59,6 +78,7 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
         .eq("room_code", roomCode)
         .maybeSingle();
       if (!data) isUnique = true;
+      attempts++;
     }
 
     expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
@@ -81,44 +101,110 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
     expiresAt = room.expires_at;
   }
 
-  // Preservation of original filename within roomCode/ prefix
+  updateProgress('preparing_upload', 10);
+
+  // File upload stage (10-85%)
   const filePath = `${roomCode}/${file.name}`;
+  
+  return new Promise((resolve, reject) => {
+    updateProgress('preparing_upload', 10);
+    
+    let uploadProgress = 0;
+    let progressInterval;
+    
+    // Fallback progress simulation in case Supabase callback doesn't work
+    const startFallbackProgress = () => {
+      progressInterval = setInterval(() => {
+        if (uploadProgress < 75) {
+          uploadProgress += Math.random() * 3 + 1; // Random increments
+          uploadProgress = Math.min(75, uploadProgress);
+          updateProgress('uploading', 10 + uploadProgress);
+        }
+      }, 200);
+    };
+    
+    const uploadTask = supabase.storage
+      .from("rooms")
+      .upload(filePath, file, {
+        onUploadProgress: (progress) => {
+          console.log("Supabase progress callback:", progress);
+          
+          if (!progress.total || progress.loaded === undefined) {
+            console.log("No progress data from Supabase, using fallback");
+            if (!progressInterval) startFallbackProgress();
+            return;
+          }
+          
+          // Clear fallback if we get real progress
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+          }
+          
+          // Calculate upload percentage (15-85% range)
+          const uploadPercentage = (progress.loaded / progress.total) * 100;
+          const scaledPercentage = 15 + (uploadPercentage * 0.7); // Scale to 15-85%
+          const clampedPercentage = Math.max(15, Math.min(85, scaledPercentage));
+          
+          updateProgress('uploading', Math.round(clampedPercentage));
+          uploadProgress = clampedPercentage - 15;
+        },
+        upsert: true
+      });
 
-  // REAL-TIME UPLOAD PROGRESS
-  console.log("Starting upload for:", filePath);
-  const { data: uploadData, error: uploadError } = await supabase.storage
-    .from("rooms")
-    .upload(filePath, file, {
-      onUploadProgress: (progress) => {
-        if (!progress.total) return;
-        const percent = 5 + Math.round((progress.loaded / progress.total) * 90);
-        onProgress(percent);
-      },
-      upsert: true // Allow multi-part uploads or re-uploads
+    // Start fallback after 500ms if no callback
+    setTimeout(() => {
+      if (!progressInterval) {
+        console.log("Starting fallback progress");
+        startFallbackProgress();
+      }
+    }, 500);
+
+    uploadTask.then(({ data, error }) => {
+      if (progressInterval) clearInterval(progressInterval);
+      
+      if (error) {
+        reject(error);
+        return;
+      }
+      
+      // Database save stage (85-95%)
+      updateProgress('saving_metadata', 85);
+      
+      supabase
+        .from("files")
+        .insert([
+          {
+            room_id: roomId,
+            file_name: file.name,
+            file_path: filePath,
+            file_size: file.size,
+            mime_type: file.type || "application/octet-stream",
+          },
+        ])
+        .select()
+        .single()
+        .then(({ data: fileData, error: dbError }) => {
+          if (dbError) {
+            reject(dbError);
+            return;
+          }
+          
+          // Finalization stage (95-100%)
+          updateProgress('finalizing', 95);
+          
+          // Simulate final processing
+          setTimeout(() => {
+            updateProgress('complete', 100);
+            resolve({ room_code: roomCode, expires_at: expiresAt, ...fileData });
+          }, 500);
+        })
+        .catch(reject);
+    }).catch((error) => {
+      if (progressInterval) clearInterval(progressInterval);
+      reject(error);
     });
-
-  if (uploadError) throw uploadError;
-
-  onProgress(98);
-
-  const { data: fileData, error: dbError } = await supabase
-    .from("files")
-    .insert([
-      {
-        room_id: roomId,
-        file_name: file.name,
-        file_path: filePath,
-        file_size: file.size,
-        mime_type: file.type || "application/octet-stream",
-      },
-    ])
-    .select()
-    .single();
-
-  if (dbError) throw dbError;
-
-  onProgress(100);
-  return { room_code: roomCode, expires_at: expiresAt, ...fileData };
+  });
 }
 
 async function apiGetRoom(code) {
@@ -180,6 +266,41 @@ async function apiDeleteRoom(code) {
   }
 
   return { message: "Room deleted" };
+}
+
+// ───────────────────────────────────────────
+// COMPONENT: ProgressBar
+// ───────────────────────────────────────────
+function ProgressBar({ progress, stage }) {
+  const getStageText = (stage, percentage) => {
+    if (percentage === 100) return "Complete!";
+    
+    switch (stage) {
+      case 'initializing': return 'Initializing...';
+      case 'creating_room': return 'Creating room...';
+      case 'preparing_upload': return 'Preparing upload...';
+      case 'uploading': return 'Uploading...';
+      case 'saving_metadata': return 'Saving to database...';
+      case 'finalizing': return 'Finalizing...';
+      case 'complete': return 'Complete!';
+      default: return 'Processing...';
+    }
+  };
+
+  return (
+    <div className="w-full max-w-md space-y-2">
+      <div className="flex justify-between text-xs font-mono text-on-surface-variant uppercase tracking-widest">
+        <span>{getStageText(stage, progress)}</span>
+        <span>{Math.round(progress)}%</span>
+      </div>
+      <div className="h-2 w-full bg-surface-container rounded-full overflow-hidden shadow-inner">
+        <div 
+          className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 ease-out" 
+          style={{ width: `${progress}%` }}
+        ></div>
+      </div>
+    </div>
+  );
 }
 
 // ───────────────────────────────────────────
@@ -263,7 +384,7 @@ function RoomCodeDisplay({ code }) {
 // ───────────────────────────────────────────
 function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
   const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [progress, setProgress] = useState({ percentage: 0, stage: 'initializing' });
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef();
@@ -272,9 +393,13 @@ function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
     if (!file) return;
     setUploading(true);
     setError("");
-    setProgress(0);
+    setProgress({ percentage: 0, stage: 'initializing' });
+    
     try {
-      await apiUploadToFileLoop(file, setProgress, roomCode);
+      await apiUploadToFileLoop(file, (percentage, stage) => {
+        setProgress({ percentage, stage });
+      }, roomCode);
+      
       await new Promise(res => setTimeout(res, 800));
       onRefresh();
     } catch (e) {
@@ -369,15 +494,7 @@ function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
       </div>
 
       {uploading && (
-        <div className="w-full max-w-md space-y-2">
-          <div className="flex justify-between text-xs font-mono text-on-surface-variant uppercase tracking-widest">
-            <span>{progress >= 99 ? "Finalizing..." : "Adding to Loop..."}</span>
-            <span>{progress}%</span>
-          </div>
-          <div className="h-2 w-full bg-surface-container rounded-full overflow-hidden shadow-inner">
-            <div className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300" style={{ width: `${progress}%` }}></div>
-          </div>
-        </div>
+        <ProgressBar progress={progress.percentage} stage={progress.stage} />
       )}
 
       {error && (
@@ -410,7 +527,7 @@ function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
 // ───────────────────────────────────────────
 function CreateRoom({ initialCode }) {
   const [file, setFile]         = useState(null);
-  const [progress, setProgress] = useState(0);
+  const [progress, setProgress] = useState({ percentage: 0, stage: 'initializing' });
   const [uploading, setUploading] = useState(false);
   const [files, setFiles]       = useState([]);
   const [error, setError]       = useState("");
@@ -446,10 +563,15 @@ function CreateRoom({ initialCode }) {
     if (!file) return;
     setUploading(true);
     setError("");
-    setProgress(0);
+    setProgress({ percentage: 0, stage: 'initializing' });
+    
     try {
-      const data = await apiUploadToFileLoop(file, setProgress);
+      const data = await apiUploadToFileLoop(file, (percentage, stage) => {
+        setProgress({ percentage, stage });
+      });
+      
       await new Promise(res => setTimeout(res, 800));
+      
       // PERSIST HOST STATE
       const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
       managed[data.room_code] = data;
@@ -508,15 +630,7 @@ function CreateRoom({ initialCode }) {
       </div>
 
       {uploading && (
-        <div className="w-full max-w-md space-y-2 animate-in fade-in duration-300">
-          <div className="flex justify-between text-xs font-mono text-on-surface-variant uppercase tracking-widest">
-            <span>{progress >= 99 ? "Finalizing Loop..." : "Syncing to Cloud..."}</span>
-            <span>{progress}%</span>
-          </div>
-          <div className="h-2 w-full bg-surface-container rounded-full overflow-hidden shadow-inner">
-            <div className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 ease-out" style={{ width: `${progress}%` }}></div>
-          </div>
-        </div>
+        <ProgressBar progress={progress.percentage} stage={progress.stage} />
       )}
 
       {error && (
