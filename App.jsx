@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { supabase } from "./supabase";
+import Footer from "./Footer";
 
 // ───────────────────────────────────────────
 // UTILS
@@ -907,14 +908,7 @@ export default function App() {
         {tab === "send" ? <CreateRoom initialCode={initialRoomCode} /> : <JoinRoom initialCode={initialRoomCode} />}
       </main>
 
-      <footer className="w-full flex flex-col items-center gap-4 px-6 py-8 bg-[#060e1b] border-t border-[#404857]/10 z-10">
-        <p className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd]">made with ❤️ by Dev Raheja</p>
-        <div className="flex gap-6">
-          <a className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Privacy</a>
-          <a className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Terms</a>
-          <a className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Support</a>
-        </div>
-      </footer>
+      <Footer />
     </div>
   );
 }
