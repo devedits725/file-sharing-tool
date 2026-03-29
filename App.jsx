@@ -3,6 +3,11 @@ import { QRCodeSVG } from 'qrcode.react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { supabase } from "./supabase";
 import Footer from "./Footer.jsx";
+import { Routes, Route, Link, useParams, useLocation, useNavigate } from "react-router-dom";
+import { Helmet } from "react-helmet-async";
+import Privacy from "./Privacy.jsx";
+import Terms from "./Terms.jsx";
+import Support from "./Support.jsx";
 
 // ───────────────────────────────────────────
 // UTILS
@@ -45,7 +50,6 @@ function getFileIcon(mime = "") {
 async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  // Initialize progress state
   const progressState = {
     stage: 'initializing',
     percentage: 0,
@@ -55,7 +59,6 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
   const updateProgress = (stage, percentage) => {
     progressState.stage = stage;
     progressState.percentage = percentage;
-    console.log(`[${stage}] ${percentage}%`);
     onProgress(percentage, stage);
   };
 
@@ -65,7 +68,6 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
   let roomId;
   let expiresAt;
 
-  // Room creation/retrieval stage (0-10%)
   updateProgress('creating_room', 5);
   
   if (!roomCode) {
@@ -104,7 +106,6 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
 
   updateProgress('preparing_upload', 10);
 
-  // File upload stage (10-85%)
   const filePath = `${roomCode}/${file.name}`;
   
   return new Promise((resolve, reject) => {
@@ -113,11 +114,10 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
     let uploadProgress = 0;
     let progressInterval;
     
-    // Fallback progress simulation in case Supabase callback doesn't work
     const startFallbackProgress = () => {
       progressInterval = setInterval(() => {
         if (uploadProgress < 75) {
-          uploadProgress += Math.random() * 3 + 1; // Random increments
+          uploadProgress += Math.random() * 3 + 1;
           uploadProgress = Math.min(75, uploadProgress);
           updateProgress('uploading', 10 + uploadProgress);
         }
@@ -128,23 +128,18 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
       .from("rooms")
       .upload(filePath, file, {
         onUploadProgress: (progress) => {
-          console.log("Supabase progress callback:", progress);
-          
           if (!progress.total || progress.loaded === undefined) {
-            console.log("No progress data from Supabase, using fallback");
             if (!progressInterval) startFallbackProgress();
             return;
           }
           
-          // Clear fallback if we get real progress
           if (progressInterval) {
             clearInterval(progressInterval);
             progressInterval = null;
           }
           
-          // Calculate upload percentage (15-85% range)
           const uploadPercentage = (progress.loaded / progress.total) * 100;
-          const scaledPercentage = 15 + (uploadPercentage * 0.7); // Scale to 15-85%
+          const scaledPercentage = 15 + (uploadPercentage * 0.7);
           const clampedPercentage = Math.max(15, Math.min(85, scaledPercentage));
           
           updateProgress('uploading', Math.round(clampedPercentage));
@@ -153,10 +148,8 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
         upsert: true
       });
 
-    // Start fallback after 500ms if no callback
     setTimeout(() => {
       if (!progressInterval) {
-        console.log("Starting fallback progress");
         startFallbackProgress();
       }
     }, 500);
@@ -169,7 +162,6 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
         return;
       }
       
-      // Database save stage (85-95%)
       updateProgress('saving_metadata', 85);
       
       supabase
@@ -191,10 +183,8 @@ async function apiUploadToFileLoop(file, onProgress, existingCode = null) {
             return;
           }
           
-          // Finalization stage (95-100%)
           updateProgress('finalizing', 95);
           
-          // Simulate final processing
           setTimeout(() => {
             updateProgress('complete', 100);
             resolve({ room_code: roomCode, expires_at: expiresAt, ...fileData });
@@ -230,7 +220,6 @@ async function apiGetRoom(code) {
 
   if (filesError) throw filesError;
 
-  // Attach room info to each file for component compatibility
   return files.map(f => ({
     ...f,
     room_code: room.room_code,
@@ -389,6 +378,7 @@ function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef();
+  const navigate = useNavigate();
 
   const handleFileUpload = async (file) => {
     if (!file) return;
@@ -438,6 +428,7 @@ function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
       delete managed[roomCode];
       localStorage.setItem("filoop_managed", JSON.stringify(managed));
       onReset();
+      navigate("/");
     } catch (e) {
       setError(e.message);
     }
@@ -480,7 +471,6 @@ function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
           </div>
         ))}
 
-        {/* IN-DASHBOARD UPLOAD ZONE */}
         <div
           className={`w-full py-8 dashed-portal rounded-xl flex flex-col items-center justify-center gap-3 bg-surface-container-low/20 backdrop-blur-md hover:bg-surface-container-high/40 transition-all cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -508,7 +498,7 @@ function FileLoopDashboard({ roomCode, files, onRefresh, onReset }) {
       <div className="flex flex-col md:flex-row gap-4 w-full justify-center">
         <button
           className="bg-surface-container text-on-surface px-8 py-4 rounded-full font-headline font-bold hover:bg-surface-container-high transition-all active:scale-95"
-          onClick={() => { window.history.pushState({}, "", "/"); onReset(); }}
+          onClick={() => { onReset(); navigate("/"); }}
         >
           New Loop
         </button>
@@ -534,6 +524,7 @@ function CreateRoom({ initialCode }) {
   const [error, setError]       = useState("");
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef();
+  const navigate = useNavigate();
 
   const refreshRoom = async (code) => {
     try {
@@ -573,11 +564,10 @@ function CreateRoom({ initialCode }) {
       
       await new Promise(res => setTimeout(res, 800));
       
-      // PERSIST HOST STATE
       const managed = JSON.parse(localStorage.getItem("filoop_managed") || "{}");
       managed[data.room_code] = data;
       localStorage.setItem("filoop_managed", JSON.stringify(managed));
-      window.history.pushState({}, "", `/${data.room_code}`);
+      navigate(`/${data.room_code}`);
       refreshRoom(data.room_code);
     } catch (e) {
       setError(e.message);
@@ -660,7 +650,7 @@ function JoinRoom({ initialCode = "" }) {
   const [files, setFiles]     = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
-  const [mode, setMode]       = useState("type"); // 'type' | 'scan'
+  const [mode, setMode]       = useState("type");
 
   const handleJoin = useCallback(async (joinCode) => {
     const cleanCode = (joinCode || code).trim().toUpperCase();
@@ -738,7 +728,6 @@ function JoinRoom({ initialCode = "" }) {
             scanner.stop().catch(() => {});
           }
         } catch (e) {
-          // Ignore scanner stop errors during unmount/mode change
         }
       }
     };
@@ -764,7 +753,6 @@ function JoinRoom({ initialCode = "" }) {
         </p>
       </div>
 
-      {/* PILL TOGGLE */}
       <div className="bg-surface-container/60 p-1 rounded-full flex gap-1 z-10 backdrop-blur-md border border-outline-variant/10">
         <button
           onClick={() => setMode('type')}
@@ -782,7 +770,7 @@ function JoinRoom({ initialCode = "" }) {
 
       {mode === 'type' ? (
         <>
-          <div className="w-full max-w-md">
+          <div className="w-full max-md">
             <input
               type="text"
               maxLength={6}
@@ -831,19 +819,12 @@ function JoinRoom({ initialCode = "" }) {
 }
 
 // ───────────────────────────────────────────
-// ROOT APP
+// COMPONENT: Home
 // ───────────────────────────────────────────
-export default function App() {
+function Home({ initialRoomCode }) {
   const [tab, setTab] = useState("send");
-  const [supabaseReady, setSupabaseReady] = useState(false);
-  const [isChecking, setIsChecking] = useState(true);
-
-  // AUTO-PARSE ROOM FROM PATH OR SEARCH
-  const urlParams = new URLSearchParams(window.location.search);
-  const searchRoom = urlParams.get("room");
-  const pathParts = window.location.pathname.split("/").filter(Boolean);
-  const pathRoom = pathParts.length === 1 && pathParts[0].length === 6 ? pathParts[0] : null;
-  const initialRoomCode = pathRoom || searchRoom || "";
+  const location = useLocation();
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (initialRoomCode) {
@@ -855,6 +836,61 @@ export default function App() {
       }
     }
   }, [initialRoomCode]);
+
+  return (
+    <>
+      <Helmet>
+        <title>Filoop — Free Room-Based File Sharing. No Account Needed.</title>
+        <meta name="description" content="Share files instantly with a 6-character room code. No sign-up, no tracking. Files auto-delete after 24 hours. Free and works on all devices." />
+        <meta property="og:title" content="Filoop — Free File Sharing" />
+        <meta property="og:description" content="Share files instantly with a 6-character room code. No sign-up, no tracking. Files auto-delete after 24 hours." />
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content="https://filoop.app" />
+        <meta name="twitter:card" content="summary" />
+        <meta name="twitter:title" content="Filoop — Free File Sharing" />
+        <meta name="twitter:description" content="Share files instantly with a 6-character room code. No sign-up, no tracking. Files auto-delete after 24 hours." />
+        <link rel="canonical" href="https://filoop.app" />
+      </Helmet>
+
+      <nav className="bg-surface-container/60 p-1 rounded-full flex gap-1 z-10 backdrop-blur-md border border-outline-variant/10 mb-12" aria-label="Main navigation">
+        <button
+          className={`px-8 py-2 rounded-full font-headline text-sm transition-all duration-300 ${tab === 'send' ? 'bg-primary/10 text-primary shadow-[0_0_15px_rgba(0,245,196,0.1)]' : 'text-on-surface-variant hover:text-on-surface'}`}
+          onClick={() => setTab('send')}
+        >
+          Send
+        </button>
+        <button
+          className={`px-8 py-2 rounded-full font-headline text-sm transition-all duration-300 ${tab === 'receive' ? 'bg-primary/10 text-primary shadow-[0_0_15px_rgba(0,245,196,0.1)]' : 'text-on-surface-variant hover:text-on-surface'}`}
+          onClick={() => setTab('receive')}
+        >
+          Receive
+        </button>
+      </nav>
+
+      {tab === "send" ? <CreateRoom initialCode={initialRoomCode} /> : <JoinRoom initialCode={initialRoomCode} />}
+    </>
+  );
+}
+
+// ───────────────────────────────────────────
+// COMPONENT: AppWrapper (Handles Room Code extraction)
+// ───────────────────────────────────────────
+function MainApp() {
+  const { roomCode } = useParams();
+  const location = useLocation();
+  const urlParams = new URLSearchParams(location.search);
+  const searchRoom = urlParams.get("room");
+  const initialRoomCode = roomCode || searchRoom || "";
+
+  return <Home initialRoomCode={initialRoomCode} />;
+}
+
+// ───────────────────────────────────────────
+// ROOT APP
+// ───────────────────────────────────────────
+export default function App() {
+  const [supabaseReady, setSupabaseReady] = useState(false);
+  const [isChecking, setIsChecking] = useState(true);
 
   useEffect(() => {
     if (supabase) setSupabaseReady(true);
@@ -883,20 +919,14 @@ export default function App() {
     <div className="bg-surface-dim text-on-surface font-body selection:bg-primary-container selection:text-on-primary-container min-h-screen flex flex-col overflow-x-hidden">
       <header className="fixed top-0 w-full flex justify-between items-center px-6 py-4 bg-[#060e1b]/80 backdrop-blur-xl z-50 border-b border-[#404857]/10 shadow-[0_20px_40px_rgba(0,245,196,0.08)]">
         <div className="flex items-center gap-8">
-          <button onClick={() => setTab('send')} className="text-2xl font-bold bg-gradient-to-r from-[#00f5c4] to-[#a3ff47] bg-clip-text text-transparent font-headline tracking-tight">Filoop</button>
-          <nav className="flex gap-6 items-center">
-            <button
-              className={`font-headline tracking-tight transition-all duration-300 pb-1 ${tab === 'send' ? 'text-primary border-b-2 border-primary' : 'text-[#a3abbd] hover:text-[#e0e8fc]'}`}
-              onClick={() => setTab('send')}
-            >
-              Send
-            </button>
-            <button
-              className={`font-headline tracking-tight transition-all duration-300 pb-1 ${tab === 'receive' ? 'text-primary border-b-2 border-primary' : 'text-[#a3abbd] hover:text-[#e0e8fc]'}`}
-              onClick={() => setTab('receive')}
-            >
-              Receive
-            </button>
+          <Link to="/" className="text-2xl font-bold bg-gradient-to-r from-[#00f5c4] to-[#a3ff47] bg-clip-text text-transparent font-headline tracking-tight">Filoop</Link>
+          <nav className="flex gap-6 items-center" aria-label="Main navigation">
+             <Link to="/" className="font-headline tracking-tight transition-all duration-300 pb-1 text-[#a3abbd] hover:text-[#e0e8fc]">
+              Home
+            </Link>
+            <Link to="/support" className="font-headline tracking-tight transition-all duration-300 pb-1 text-[#a3abbd] hover:text-[#e0e8fc]">
+              Support
+            </Link>
           </nav>
         </div>
       </header>
@@ -905,7 +935,13 @@ export default function App() {
         <div className="absolute inset-0 kinetic-grid pointer-events-none"></div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[800px] aspect-square radial-glow pointer-events-none"></div>
 
-        {tab === "send" ? <CreateRoom initialCode={initialRoomCode} /> : <JoinRoom initialCode={initialRoomCode} />}
+        <Routes>
+          <Route path="/" element={<MainApp />} />
+          <Route path="/:roomCode" element={<MainApp />} />
+          <Route path="/privacy" element={<Privacy />} />
+          <Route path="/terms" element={<Terms />} />
+          <Route path="/support" element={<Support />} />
+        </Routes>
       </main>
 
       <Footer />

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+Disallow: /room/
+Sitemap: https://filoop.app/sitemap.xml
