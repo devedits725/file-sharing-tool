@@ -607,7 +607,7 @@ function CreateRoom({ initialCode }) {
       </div>
 
       <div
-        className={`w-full aspect-[16/9] md:aspect-[21/9] flex items-center justify-center p-1 rounded-xl group cursor-pointer transition-all duration-500 ${dragOver ? 'scale-[1.02]' : ''}`}
+        className={`w-full max-w-2xl aspect-video md:aspect-[21/8] flex items-center justify-center p-1 rounded-xl group cursor-pointer transition-all duration-500 ${dragOver ? 'scale-[1.02]' : ''}`}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); }}
