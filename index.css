@@ -8,6 +8,8 @@
     --on-surface: 224, 232, 252;
     --primary: 0, 245, 196;
     --secondary: 163, 255, 71;
+    --muted: #a3abbd;
+    --accent: #00f5c4;
   }
 }
 
