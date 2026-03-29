@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { supabase } from "./supabase";
-import Footer from "./Footer";
+import Footer from "./Footer.jsx";
 
 // ───────────────────────────────────────────
 // UTILS
