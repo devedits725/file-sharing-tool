@@ -1,4 +1,5 @@
 import styles from "./Footer.module.css";
+import { Link } from "react-router-dom";
 
 const Footer = () => {
   return (
@@ -8,12 +9,12 @@ const Footer = () => {
       </p>
       <div className="flex gap-6">
         <div className="flex items-center gap-2">
-          <a
+          <Link
             className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100"
-            href="#"
+            to="/privacy"
           >
             Privacy
-          </a>
+          </Link>
           <a
             href="/filoop-privacy-policy.pdf"
             download
@@ -25,12 +26,12 @@ const Footer = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <a
+          <Link
             className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100"
-            href="#"
+            to="/terms"
           >
             Terms
-          </a>
+          </Link>
           <a
             href="/filoop-terms-of-service.pdf"
             download
@@ -42,12 +43,12 @@ const Footer = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <a
+          <Link
             className="font-mono text-[10px] uppercase tracking-widest text-[#a3abbd] hover:text-primary transition-colors opacity-80 hover:opacity-100"
-            href="#"
+            to="/support"
           >
             Support
-          </a>
+          </Link>
           <a
             href="/filoop-support-guide.pdf"
             download
